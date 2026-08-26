@@ -46,9 +46,31 @@ export function clearSecrets(): void {
   secrets.clear();
 }
 
+/**
+ * Strips the credential-bearing part of any URL in `text`.
+ *
+ * FFmpeg and yt-dlp happily print whole signed media URLs (googlevideo and
+ * SoundCloud CDN links carry the signature in the query string). Host and
+ * path are what makes a log line useful for debugging; the query is not.
+ */
+export function redactUrls(text: string): string {
+  return text.replace(/\bhttps?:\/\/\S+/gi, (candidate) => {
+    // Trailing punctuation belongs to the sentence, not to the URL.
+    const trailing = /[.,;:!?)\]}'"]+$/.exec(candidate)?.[0] ?? '';
+    const raw = candidate.slice(0, candidate.length - trailing.length);
+    try {
+      const url = new URL(raw);
+      const query = url.search === '' ? '' : '?[redacted]';
+      return `${url.origin}${url.pathname}${query}${trailing}`;
+    } catch {
+      return candidate;
+    }
+  });
+}
+
 /** Replaces every registered secret found in `text` with a placeholder. */
 export function redact(text: string): string {
-  let output = text;
+  let output = redactUrls(text);
   for (const secret of secrets) {
     output = output.split(secret).join('[REDACTED]');
   }

@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { clearSecrets, createLogger, redact, registerSecret } from '../src/logger.js';
+import { clearSecrets, createLogger, redact, redactUrls, registerSecret } from '../src/logger.js';
 
 function fakeSink() {
   const sink = {
@@ -76,5 +76,49 @@ describe('secret redaction', () => {
     registerSecret(token);
 
     expect(redact('nothing to hide here')).toBe('nothing to hide here');
+  });
+});
+
+describe('signed URL redaction', () => {
+  const SIGNED =
+    'https://rr5---sn-abc.googlevideo.com/videoplayback?expire=1&sig=SUPERSECRET&ei=xyz';
+
+  it('keeps host and path but drops the signature', () => {
+    const redacted = redactUrls(`FFmpeg: ${SIGNED}: 403 Forbidden`);
+
+    expect(redacted).not.toContain('SUPERSECRET');
+    expect(redacted).not.toContain('sig=');
+    expect(redacted).toContain('rr5---sn-abc.googlevideo.com/videoplayback');
+    expect(redacted).toContain('[redacted]');
+    expect(redacted).toContain('403 Forbidden');
+  });
+
+  it('redacts SoundCloud CDN policies too', () => {
+    const redacted = redactUrls('open https://cf-media.sndcdn.com/a.mp3?Policy=abc&Signature=def');
+
+    expect(redacted).not.toContain('Signature');
+    expect(redacted).toContain('cf-media.sndcdn.com/a.mp3');
+  });
+
+  it('leaves ordinary text and unsigned links readable', () => {
+    expect(redactUrls('nothing to redact here')).toBe('nothing to redact here');
+    expect(redactUrls('see https://soundcloud.com/artist/track now')).toBe(
+      'see https://soundcloud.com/artist/track now',
+    );
+  });
+
+  it('reaches every log line, including errors thrown by a library', () => {
+    const { sink, everythingLogged } = fakeSink();
+    const logger = createLogger('debug', sink);
+
+    logger.warn(`FFmpeg: ${SIGNED}`);
+    logger.error('failed', new Error(`could not open ${SIGNED}`));
+    logger.info('payload', { url: SIGNED, Cookie: 'sid=abc', Authorization: 'Bearer t' });
+
+    const logged = everythingLogged();
+    expect(logged).not.toContain('SUPERSECRET');
+    expect(logged).not.toContain('sig=');
+    // The useful part survives, so a 403 is still debuggable.
+    expect(logged).toContain('googlevideo.com/videoplayback');
   });
 });

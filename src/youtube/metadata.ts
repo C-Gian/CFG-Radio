@@ -1,5 +1,8 @@
 import { ProviderError } from '../player/provider-error.js';
 import { createTrack, type Track } from '../player/track.js';
+import { parsePlayableSource } from '../audio/playable-source.js';
+import type { PlayableSource } from '../player/transport.js';
+import { playbackArgs } from './playback.js';
 import { canonicalWatchUrl } from './url.js';
 import { JS_RUNTIME_ARGS, type YtDlpRunner } from './ytdlp.js';
 
@@ -79,17 +82,52 @@ export async function fetchYouTubeMetadata(
 }
 
 /**
+ * Resolves metadata and a playable source with one yt-dlp extraction.
+ *
+ * Used only when a track is about to start right away; the source never
+ * reaches the `Track` and is never queued or persisted.
+ */
+export async function fetchYouTubeVideo(
+  runner: YtDlpRunner,
+  videoUrl: string,
+  videoId: string,
+): Promise<YouTubeVideoResolution> {
+  const payload = await runner.json(playbackArgs(videoUrl));
+  return {
+    metadata: parseYouTubeMetadata(payload, videoId),
+    source: parsePlayableSource(payload),
+  };
+}
+
+/**
  * The narrow view `/play` depends on.
  *
  * Declaring it keeps the command handler testable without a yt-dlp process.
  */
+export interface YouTubeVideoResolution {
+  readonly metadata: YouTubeMetadata;
+  /**
+   * Runtime-only source for an immediate start. It is discarded when the
+   * track is queued instead: queued tracks are always resolved late.
+   */
+  readonly source: PlayableSource;
+}
+
 export interface YouTubeMetadataProvider {
   fetchMetadata(videoUrl: string, videoId: string): Promise<YouTubeMetadata>;
+  /**
+   * Metadata plus a playable source from a single extraction.
+   *
+   * A YouTube extraction costs about three seconds, and asking for metadata
+   * and formats separately paid that twice for one `/play`.
+   */
+  fetchMetadataWithSource(videoUrl: string, videoId: string): Promise<YouTubeVideoResolution>;
 }
 
 export function createYouTubeMetadataProvider(runner: YtDlpRunner): YouTubeMetadataProvider {
   return {
     fetchMetadata: (videoUrl, videoId) => fetchYouTubeMetadata(runner, videoUrl, videoId),
+    fetchMetadataWithSource: (videoUrl, videoId) => fetchYouTubeVideo(runner, videoUrl, videoId),
   };
 }
 

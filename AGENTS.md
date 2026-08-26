@@ -133,6 +133,10 @@ Layering, from the command down: **handler → GuildPlayer → TrackResolver →
 - **Late resolution is mandatory.** A queued track holds identity only. Signed media URLs are
   resolved when playback starts, live in the `PlayableSource`, and are never stored, cached or
   persisted.
+- The single exception is the _immediate_ start: `/play` may hand `enqueue()` the source that
+  came out of the very same extraction, and the player uses it only when the track starts right
+  away and the offer is still fresh. A track that gets queued drops the offer and is resolved
+  late like everything else. Never widen this into a media-URL cache.
 - Never add cookies, an account, a browser profile, a proxy or a PO-token workaround. If YouTube
   refuses, classify the failure and fail cleanly.
 - Never download media to disk: FFmpeg streams the resolved URL.

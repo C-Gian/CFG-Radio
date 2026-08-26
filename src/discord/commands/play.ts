@@ -56,13 +56,17 @@ export const play: Command = {
 
     if (classified.kind === 'youtube-video') {
       let track;
+      let immediateSource;
       try {
-        const metadata = await context.youtube.fetchMetadata(
+        // One extraction yields both the identity and a runtime-only source:
+        // asking twice used to double the wait before the first note.
+        const resolved = await context.youtube.fetchMetadataWithSource(
           classified.canonicalUrl,
           classified.videoId,
         );
+        immediateSource = resolved.source;
         track = toYouTubeTrack({
-          metadata,
+          metadata: resolved.metadata,
           requestedByUserId: interaction.user.id,
           originalInput: rawInput,
         });
@@ -82,7 +86,9 @@ export const play: Command = {
           adapterCreator: target.guild.voiceAdapterCreator,
         });
 
-        const result = await player.enqueue(track);
+        // The source is used only if this track starts now; a queued track
+        // is resolved late, exactly as before.
+        const result = await player.enqueue(track, immediateSource);
         await respond(interaction, enqueueMessage(result, target.channel.toString()));
       } catch (error) {
         await answerJoinFailure(interaction, context, target.guild.id, error);

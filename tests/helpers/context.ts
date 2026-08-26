@@ -71,21 +71,34 @@ export interface FakePlayers {
 export interface FakeContextOverrides extends Partial<FakePlayers> {
   /** Replaces the default metadata provider (which always succeeds). */
   fetchMetadata?: ReturnType<typeof vi.fn>;
+  fetchMetadataWithSource?: ReturnType<typeof vi.fn>;
   fetchPlaylist?: ReturnType<typeof vi.fn>;
 }
+
+/** Runtime-only source the fake single-extraction provider hands back. */
+export const fakeImmediateSource = {
+  kind: 'url',
+  input: 'https://media.invalid/immediate',
+} as const;
 
 /** A command context wired to spies - no Discord, no voice, no yt-dlp. */
 export function fakeContext(overrides: FakeContextOverrides = {}) {
   const {
     fetchMetadata: fetchMetadataOverride,
+    fetchMetadataWithSource: fetchMetadataWithSourceOverride,
     fetchPlaylist: fetchPlaylistOverride,
     ...playerOverrides
   } = overrides;
   const logger = fakeLogger();
   const fetchMetadata = fetchMetadataOverride ?? vi.fn().mockResolvedValue(fakeMetadata);
   const fetchPlaylist = fetchPlaylistOverride ?? vi.fn().mockResolvedValue(fakePlaylist);
+  const fetchMetadataWithSource =
+    fetchMetadataWithSourceOverride ??
+    vi.fn().mockResolvedValue({ metadata: fakeMetadata, source: fakeImmediateSource });
   const youtube: YouTubeMetadataProvider & YouTubePlaylistProvider = {
     fetchMetadata: fetchMetadata as unknown as YouTubeMetadataProvider['fetchMetadata'],
+    fetchMetadataWithSource:
+      fetchMetadataWithSource as unknown as YouTubeMetadataProvider['fetchMetadataWithSource'],
     fetchPlaylist: fetchPlaylist as unknown as YouTubePlaylistProvider['fetchPlaylist'],
   };
   const players: FakePlayers = {
@@ -104,7 +117,7 @@ export function fakeContext(overrides: FakeContextOverrides = {}) {
     youtube,
   };
 
-  return { context, logger, players, fetchMetadata, fetchPlaylist };
+  return { context, logger, players, fetchMetadata, fetchMetadataWithSource, fetchPlaylist };
 }
 
 /**
@@ -116,7 +129,7 @@ export function contextWithPlayer(guildId = 'guild-1', channelId: string | null 
   const logger = fakeLogger();
   const player = new GuildPlayer({ guildId, transport, resolve: fakeResolver, logger });
 
-  const { context, players, fetchMetadata, fetchPlaylist } = fakeContext({
+  const { context, players, fetchMetadata, fetchMetadataWithSource, fetchPlaylist } = fakeContext({
     get: vi.fn((id: string) => (id === guildId ? player : undefined)),
     join: vi.fn(() => Promise.resolve(player)),
     channelIdOf: vi.fn((id: string) => (id === guildId ? channelId : undefined)),
@@ -129,7 +142,16 @@ export function contextWithPlayer(guildId = 'guild-1', channelId: string | null 
     }),
   });
 
-  return { context, players, player, transport, logger, fetchMetadata, fetchPlaylist };
+  return {
+    context,
+    players,
+    player,
+    transport,
+    logger,
+    fetchMetadata,
+    fetchMetadataWithSource,
+    fetchPlaylist,
+  };
 }
 
 export interface FakeInteractionOptions {

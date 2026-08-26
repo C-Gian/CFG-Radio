@@ -4,6 +4,7 @@ import { play } from '../src/discord/commands/play.js';
 import { ProviderError } from '../src/player/provider-error.js';
 import {
   contextWithPlayer,
+  fakeImmediateSource,
   fakeChatInput,
   fakeContext,
   fakePlaylist,
@@ -27,32 +28,32 @@ describe('/play - input handling', () => {
     ],
     ['not a url at all', 'Search is not available'],
   ])('refuses %s before touching the network', async (url, expected) => {
-    const { context, players, fetchMetadata } = fakeContext();
+    const { context, players, fetchMetadataWithSource } = fakeContext();
     const { interaction, reply } = playInteraction(url);
 
     await play.execute(interaction, context);
 
     expect(replyContent(reply)).toContain(expected);
-    expect(fetchMetadata).not.toHaveBeenCalled();
+    expect(fetchMetadataWithSource).not.toHaveBeenCalled();
     expect(players.join).not.toHaveBeenCalled();
   });
 
   it('resolves the metadata of a supported video with the canonical URL', async () => {
-    const { context, fetchMetadata } = contextWithPlayer('guild-1', null);
+    const { context, fetchMetadataWithSource } = contextWithPlayer('guild-1', null);
     const { interaction } = playInteraction('https://youtu.be/dQw4w9WgXcQ?t=30');
 
     await play.execute(interaction, context);
 
-    expect(fetchMetadata).toHaveBeenCalledWith(VIDEO_URL, 'dQw4w9WgXcQ');
+    expect(fetchMetadataWithSource).toHaveBeenCalledWith(VIDEO_URL, 'dQw4w9WgXcQ');
   });
 
   it('keeps watch video plus list as one video and never imports the playlist', async () => {
-    const { context, fetchMetadata, fetchPlaylist } = contextWithPlayer('guild-1', null);
+    const { context, fetchMetadataWithSource, fetchPlaylist } = contextWithPlayer('guild-1', null);
     const { interaction } = playInteraction(`${VIDEO_URL}&list=PLabcdefghijklmnop&index=2`);
 
     await play.execute(interaction, context);
 
-    expect(fetchMetadata).toHaveBeenCalledWith(VIDEO_URL, 'dQw4w9WgXcQ');
+    expect(fetchMetadataWithSource).toHaveBeenCalledWith(VIDEO_URL, 'dQw4w9WgXcQ');
     expect(fetchPlaylist).not.toHaveBeenCalled();
   });
 });
@@ -61,13 +62,16 @@ describe('/play - playlist import', () => {
   const playlistUrl = 'https://www.youtube.com/playlist?list=PLabcdefghijklmnop';
 
   it('starts the first track and enqueues the remainder when idle', async () => {
-    const { context, player, fetchMetadata, fetchPlaylist } = contextWithPlayer('guild-1', null);
+    const { context, player, fetchMetadataWithSource, fetchPlaylist } = contextWithPlayer(
+      'guild-1',
+      null,
+    );
     const { interaction, reply } = playInteraction(playlistUrl, { userId: 'requester-42' });
 
     await play.execute(interaction, context);
 
     expect(fetchPlaylist).toHaveBeenCalledWith(playlistUrl, 'PLabcdefghijklmnop', 100);
-    expect(fetchMetadata).not.toHaveBeenCalled();
+    expect(fetchMetadataWithSource).not.toHaveBeenCalled();
     expect(replyContent(reply)).toContain('Playing **A YouTube Song**');
     expect(replyContent(reply)).toContain(
       'Added **3 tracks** from playlist **A YouTube Playlist**',
@@ -190,34 +194,34 @@ describe('/play - playlist import', () => {
 
 describe('/play - voice policy', () => {
   it('refuses when the user is not in a voice channel', async () => {
-    const { context, fetchMetadata, players } = fakeContext();
+    const { context, fetchMetadataWithSource, players } = fakeContext();
     const { interaction, reply } = playInteraction(VIDEO_URL, { userChannelId: null });
 
     await play.execute(interaction, context);
 
     expect(replyContent(reply)).toContain('Join a voice channel first');
-    expect(fetchMetadata).not.toHaveBeenCalled();
+    expect(fetchMetadataWithSource).not.toHaveBeenCalled();
     expect(players.join).not.toHaveBeenCalled();
   });
 
   it('refuses when the bot is busy in another channel', async () => {
-    const { context, fetchMetadata } = contextWithPlayer('guild-1', 'vc-9');
+    const { context, fetchMetadataWithSource } = contextWithPlayer('guild-1', 'vc-9');
     const { interaction, reply } = playInteraction(VIDEO_URL, { userChannelId: 'vc-1' });
 
     await play.execute(interaction, context);
 
     expect(replyContent(reply)).toContain('already connected to another voice channel');
-    expect(fetchMetadata).not.toHaveBeenCalled();
+    expect(fetchMetadataWithSource).not.toHaveBeenCalled();
   });
 
   it('refuses when the bot cannot speak in the channel', async () => {
-    const { context, fetchMetadata } = fakeContext();
+    const { context, fetchMetadataWithSource } = fakeContext();
     const { interaction, reply } = playInteraction(VIDEO_URL, { missingPermissions: true });
 
     await play.execute(interaction, context);
 
     expect(replyContent(reply)).toContain('missing the following permission');
-    expect(fetchMetadata).not.toHaveBeenCalled();
+    expect(fetchMetadataWithSource).not.toHaveBeenCalled();
   });
 
   it('is guild only', async () => {
@@ -240,7 +244,9 @@ describe('/play - metadata failures', () => {
     ['not_found', 'I could not find that video.'],
   ] as const)('answers a %s failure with a short message', async (code, expected) => {
     const { context, players, logger } = fakeContext({
-      fetchMetadata: vi.fn().mockRejectedValue(new ProviderError(code, 'internal detail')),
+      fetchMetadataWithSource: vi
+        .fn()
+        .mockRejectedValue(new ProviderError(code, 'internal detail')),
     });
     const { interaction, reply } = playInteraction(VIDEO_URL);
 
@@ -254,7 +260,7 @@ describe('/play - metadata failures', () => {
   it('never shows yt-dlp stderr to the user', async () => {
     const stderr = 'ERROR: [youtube] dQw4w9WgXcQ: Unable to extract player response; nsig failure';
     const { context } = fakeContext({
-      fetchMetadata: vi
+      fetchMetadataWithSource: vi
         .fn()
         .mockRejectedValue(new ProviderError('extractor_failed', 'boom', { diagnostic: stderr })),
     });
@@ -270,7 +276,7 @@ describe('/play - metadata failures', () => {
 
   it('handles an unclassified failure without crashing', async () => {
     const { context } = fakeContext({
-      fetchMetadata: vi.fn().mockRejectedValue(new Error('kaboom')),
+      fetchMetadataWithSource: vi.fn().mockRejectedValue(new Error('kaboom')),
     });
     const { interaction, reply } = playInteraction(VIDEO_URL);
 
@@ -308,7 +314,7 @@ describe('/play - queueing', () => {
 
   it('reports a playback failure that happens on immediate start', async () => {
     const { context, transport } = contextWithPlayer('guild-1', null);
-    transport.failFor('dQw4w9WgXcQ.opus');
+    transport.failFor(fakeImmediateSource.input);
     const { interaction, reply } = playInteraction(VIDEO_URL);
 
     await play.execute(interaction, context);

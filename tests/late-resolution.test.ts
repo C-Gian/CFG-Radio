@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createTrackResolver } from '../src/audio/track-resolver.js';
-import { GuildPlayer } from '../src/player/guild-player.js';
+import { GuildPlayer, IMMEDIATE_SOURCE_MAX_AGE_MS } from '../src/player/guild-player.js';
 import { ProviderError } from '../src/player/provider-error.js';
 import { createTrack, type Track } from '../src/player/track.js';
 import type { PlayableSource } from '../src/player/transport.js';
@@ -226,5 +226,93 @@ describe('createTrackResolver', () => {
     expect(local).toMatchObject({ kind: 'file' });
     expect(local.input.replaceAll('\\', '/')).toMatch(/\/assets\/arpeggio\.opus$/);
     expect(json).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('immediate source optimisation', () => {
+  const IMMEDIATE: PlayableSource = { kind: 'url', input: 'https://immediate.invalid/audio' };
+
+  it('starts an idle player from the offered source without resolving again', async () => {
+    const { player, transport, resolve } = createPlayer();
+
+    const result = await player.enqueue(youtubeTrack('aaaaaaaaaaa'), IMMEDIATE);
+
+    expect(result.kind).toBe('started');
+    expect(resolve).not.toHaveBeenCalled();
+    expect(transport.played).toEqual([IMMEDIATE]);
+  });
+
+  it('discards the offered source when the track is queued instead', async () => {
+    const { player, transport, resolve, calls } = createPlayer();
+    await player.enqueue(youtubeTrack('aaaaaaaaaaa'));
+    const queued = youtubeTrack('bbbbbbbbbbb');
+
+    const result = await player.enqueue(queued, IMMEDIATE);
+    expect(result.kind).toBe('queued');
+    // Late resolution still governs everything that waits in the queue.
+    expect(JSON.stringify(player.snapshot())).not.toContain('immediate.invalid');
+
+    transport.finishTrack();
+    await player.whenSettled();
+
+    expect(calls.map((track) => track.sourceId)).toEqual(['aaaaaaaaaaa', 'bbbbbbbbbbb']);
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(transport.played.map((source) => source.input)).not.toContain(IMMEDIATE.input);
+  });
+
+  it('never lets the offered source reach the Track', async () => {
+    const { player } = createPlayer();
+    const track = youtubeTrack('aaaaaaaaaaa');
+
+    await player.enqueue(track, IMMEDIATE);
+
+    expect(JSON.stringify(track)).not.toContain('immediate.invalid');
+    expect(JSON.stringify(player.current)).not.toContain('immediate.invalid');
+  });
+
+  it('falls back to a fresh resolution when the offer went stale', async () => {
+    const transport = new FakeTransport();
+    let releaseFirst: ((error: Error) => void) | undefined;
+    let first = true;
+    const resolve = vi.fn((track: Track): Promise<PlayableSource> => {
+      if (first) {
+        first = false;
+        return new Promise<PlayableSource>((_ignored, reject) => {
+          releaseFirst = reject;
+        });
+      }
+      return Promise.resolve({ kind: 'url', input: `${MEDIA_URL}&id=${track.sourceId}` });
+    });
+    const player = new GuildPlayer({
+      guildId: 'guild-1',
+      transport,
+      resolve,
+      logger: fakeLogger(),
+    });
+
+    // The offer is made while a previous attempt still owns the chain.
+    const blocking = player.enqueue(youtubeTrack('blocking'));
+    const offered = player.enqueue(youtubeTrack('aaaaaaaaaaa'), IMMEDIATE);
+
+    // The blocking attempt has to own the chain before the clock is moved.
+    await vi.waitFor(() => {
+      expect(releaseFirst).toBeDefined();
+    });
+
+    const realNow = Date.now();
+    const clock = vi
+      .spyOn(Date, 'now')
+      .mockReturnValue(realNow + IMMEDIATE_SOURCE_MAX_AGE_MS + 1_000);
+    try {
+      releaseFirst?.(new Error('primary gone'));
+      await blocking;
+      await offered;
+    } finally {
+      clock.mockRestore();
+    }
+
+    // Two resolutions: the failed blocker, then a fresh one for the stale offer.
+    expect(resolve).toHaveBeenCalledTimes(2);
+    expect(transport.played.map((source) => source.input)).toEqual([`${MEDIA_URL}&id=aaaaaaaaaaa`]);
   });
 });

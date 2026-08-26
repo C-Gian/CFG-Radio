@@ -1,5 +1,6 @@
 import { MessageFlags, type Interaction, type RepliableInteraction } from 'discord.js';
 import type { CommandRegistry } from './command.js';
+import type { CommandContext } from './context.js';
 import type { Logger } from '../logger.js';
 
 const GENERIC_ERROR_MESSAGE = 'Something went wrong while running this command.';
@@ -33,8 +34,10 @@ async function respondSafely(
 export async function handleInteraction(
   interaction: Interaction,
   registry: CommandRegistry,
-  logger: Logger,
+  context: CommandContext,
 ): Promise<void> {
+  const { logger } = context;
+
   if (!interaction.isChatInputCommand()) {
     return;
   }
@@ -49,7 +52,7 @@ export async function handleInteraction(
   logger.debug(`Executing command: ${interaction.commandName}`);
 
   try {
-    await command.execute(interaction);
+    await command.execute(interaction, context);
   } catch (error) {
     logger.error(`Command "${interaction.commandName}" failed`, error);
     await respondSafely(interaction, GENERIC_ERROR_MESSAGE, logger);

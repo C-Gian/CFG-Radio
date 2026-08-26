@@ -7,13 +7,19 @@ export interface AppConfig {
   readonly logLevel: LogLevel;
   readonly defaultVolume: number;
   readonly idleDisconnectSeconds: number;
+  /** Executable used to spawn FFmpeg; resolved through PATH by default. */
+  readonly ffmpegPath: string;
 }
 
 export const DEFAULTS = {
   logLevel: 'info',
   defaultVolume: 100,
   idleDisconnectSeconds: 300,
-} as const satisfies Pick<AppConfig, 'logLevel' | 'defaultVolume' | 'idleDisconnectSeconds'>;
+  ffmpegPath: 'ffmpeg',
+} as const satisfies Pick<
+  AppConfig,
+  'logLevel' | 'defaultVolume' | 'idleDisconnectSeconds' | 'ffmpegPath'
+>;
 
 /**
  * Raised when the environment is not usable.
@@ -40,6 +46,11 @@ function requireString(env: RawEnv, key: string, issues: string[]): string {
     return '';
   }
   return value;
+}
+
+function optionalString(env: RawEnv, key: string, fallback: string): string {
+  const value = env[key]?.trim();
+  return value === undefined || value === '' ? fallback : value;
 }
 
 function optionalInteger(
@@ -76,6 +87,16 @@ function optionalLogLevel(env: RawEnv, issues: string[]): LogLevel {
 }
 
 /**
+ * FFmpeg executable from the environment.
+ *
+ * Exposed for the maintenance scripts, which must not require Discord
+ * credentials just to transcode a file.
+ */
+export function ffmpegPathFromEnv(env: RawEnv = process.env): string {
+  return optionalString(env, 'FFMPEG_PATH', DEFAULTS.ffmpegPath);
+}
+
+/**
  * Validates the process environment and returns the typed application config.
  *
  * @throws {ConfigError} when a required variable is missing or a value is invalid.
@@ -97,6 +118,7 @@ export function loadConfig(env: RawEnv = process.env): AppConfig {
       86_400,
       issues,
     ),
+    ffmpegPath: optionalString(env, 'FFMPEG_PATH', DEFAULTS.ffmpegPath),
   };
 
   if (issues.length > 0) {

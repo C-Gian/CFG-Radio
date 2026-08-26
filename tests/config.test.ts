@@ -21,6 +21,7 @@ describe('loadConfig', () => {
       logLevel: DEFAULTS.logLevel,
       defaultVolume: DEFAULTS.defaultVolume,
       idleDisconnectSeconds: DEFAULTS.idleDisconnectSeconds,
+      ffmpegPath: DEFAULTS.ffmpegPath,
     });
   });
 
@@ -35,6 +36,18 @@ describe('loadConfig', () => {
     expect(config.logLevel).toBe('debug');
     expect(config.defaultVolume).toBe(55);
     expect(config.idleDisconnectSeconds).toBe(0);
+  });
+
+  it('uses the FFmpeg executable from the environment when provided', () => {
+    const config = loadConfig({ ...validEnv(), FFMPEG_PATH: '  C:/tools/ffmpeg.exe  ' });
+
+    expect(config.ffmpegPath).toBe('C:/tools/ffmpeg.exe');
+  });
+
+  it('falls back to the PATH lookup when FFMPEG_PATH is empty', () => {
+    const config = loadConfig({ ...validEnv(), FFMPEG_PATH: '   ' });
+
+    expect(config.ffmpegPath).toBe('ffmpeg');
   });
 
   it('trims surrounding whitespace of required variables', () => {

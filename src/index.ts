@@ -5,6 +5,7 @@ import { attachHandlers, createClient } from './discord/client.js';
 import { createCommandRegistry } from './discord/command.js';
 import { commands } from './discord/commands/index.js';
 import { createLogger, formatForLog, registerSecret, type Logger } from './logger.js';
+import { VoiceSessionManager } from './voice/session-manager.js';
 
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
@@ -25,20 +26,27 @@ async function main(): Promise<void> {
 
   const logger = createLogger(config.logLevel);
   const client = createClient();
+  const voice = new VoiceSessionManager({ ffmpegPath: config.ffmpegPath, logger });
 
-  attachHandlers(client, createCommandRegistry(commands), logger);
-  installProcessHandlers(client, logger);
+  attachHandlers(client, createCommandRegistry(commands), { config, logger, voice });
+  installProcessHandlers({ client, voice, logger });
 
   logger.info('Starting CFG Radio...');
   logger.debug(
     `Config loaded (logLevel=${config.logLevel}, defaultVolume=${config.defaultVolume}, ` +
-      `idleDisconnectSeconds=${config.idleDisconnectSeconds})`,
+      `idleDisconnectSeconds=${config.idleDisconnectSeconds}, ffmpegPath=${config.ffmpegPath})`,
   );
 
   await client.login(config.discordToken);
 }
 
-function installProcessHandlers(client: { destroy: () => Promise<void> }, logger: Logger): void {
+interface ShutdownTargets {
+  readonly client: { destroy: () => Promise<void> };
+  readonly voice: { destroyAll: () => void };
+  readonly logger: Logger;
+}
+
+function installProcessHandlers({ client, voice, logger }: ShutdownTargets): void {
   let shuttingDown = false;
 
   const shutdown = (reason: string, exitCode: number): void => {
@@ -47,6 +55,13 @@ function installProcessHandlers(client: { destroy: () => Promise<void> }, logger
     }
     shuttingDown = true;
     logger.info(`Received ${reason}, shutting down...`);
+
+    // Players and FFmpeg children first, then the gateway connection.
+    try {
+      voice.destroyAll();
+    } catch (error) {
+      logger.error(`Failed to close the voice sessions cleanly`, error);
+    }
 
     client
       .destroy()

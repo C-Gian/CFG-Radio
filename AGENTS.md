@@ -67,17 +67,39 @@ anti-bot evasion technique — in code, dependencies or documentation.
 
 ```
 src/
+  audio/
+    ffmpeg.ts                FFmpeg child process abstraction (Ogg/Opus on stdout) + probe
+    test-tone.ts             path/validation of the synthetic smoke-test asset
   config/env.ts              env validation -> typed AppConfig (throws ConfigError, never logs values)
   discord/
     client.ts                Discord client factory + event wiring
     command.ts               Command contract, registry, REST serialisation
+    context.ts               CommandContext handed to every command handler
     interaction-handler.ts   interaction routing + error handling
     commands/                one file per slash command
+  voice/
+    session.ts               VoiceConnection + AudioPlayer + current FFmpeg pipeline
+    session-manager.ts       one session per guild, cleanup entrypoint
+    policy.ts                pure "can I play here?" decision logic
   logger.ts                  leveled logger with secret redaction
   index.ts                   runtime entrypoint (login, graceful shutdown)
   register-commands.ts       one-off guild slash command registration
+  diagnostics-voice.ts       npm run diagnostics:voice
+tools/                       maintenance scripts (test tone generation)
+assets/                      synthetic smoke-test audio only (see assets/README.md)
 tests/                       Vitest, pure logic only — no network, no real token, no .env
 ```
+
+## Audio / voice rules
+
+- FFmpeg is a **system dependency**, spawned as a controlled child process. Do not
+  switch to `ffmpeg-static` or a native Opus binding without a real blocker: FFmpeg's
+  libopus already produces the Ogg/Opus 48 kHz stereo stream Discord wants.
+- Every spawned process must be owned by something that kills it: `stop()`/`destroy()`
+  are idempotent and must leave no zombie FFmpeg behind.
+- A dying FFmpeg, a failed voice handshake or an audio player error must never crash
+  the process — log, clean up, tell the user.
+- `assets/` holds synthetic smoke-test audio only. Never commit copyrighted media.
 
 ## Tests
 

@@ -1,3 +1,4 @@
+import type { CommandContext } from './context.js';
 import type {
   ChatInputCommandInteraction,
   RESTPostAPIChatInputApplicationCommandsJSONBody,
@@ -12,7 +13,7 @@ import type {
  */
 export interface Command {
   readonly data: Pick<SlashCommandBuilder, 'name' | 'toJSON'>;
-  execute(interaction: ChatInputCommandInteraction): Promise<void>;
+  execute(interaction: ChatInputCommandInteraction, context: CommandContext): Promise<void>;
 }
 
 export type CommandRegistry = ReadonlyMap<string, Command>;

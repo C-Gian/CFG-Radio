@@ -18,9 +18,12 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "test": "vitest run",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build"
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build",
+    "assets:tone": "tsx tools/generate-test-tone.ts",
+    "diagnostics:voice": "tsx src/diagnostics-voice.ts"
   },
   "dependencies": {
+    "@discordjs/voice": "^0.19.2",
     "discord.js": "^14.27.0",
     "dotenv": "^17.4.2"
   },

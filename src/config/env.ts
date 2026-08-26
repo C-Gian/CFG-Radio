@@ -1,3 +1,6 @@
+import { existsSync } from 'node:fs';
+
+import { localYtDlpPath } from '../setup/ytdlp-release.js';
 import { LOG_LEVELS, type LogLevel } from '../logger.js';
 
 export interface AppConfig {
@@ -107,9 +110,24 @@ export function ffmpegPathFromEnv(env: RawEnv = process.env): string {
   return optionalString(env, 'FFMPEG_PATH', DEFAULTS.ffmpegPath);
 }
 
-/** yt-dlp executable from the environment. See {@link ffmpegPathFromEnv}. */
-export function ytdlpPathFromEnv(env: RawEnv = process.env): string {
-  return optionalString(env, 'YTDLP_PATH', DEFAULTS.ytdlpPath);
+/**
+ * yt-dlp executable, resolved in the order that keeps every environment happy:
+ *
+ * 1. `YTDLP_PATH`, when an operator points somewhere specific;
+ * 2. the binary the setup bootstrap installed next to the repository, which is
+ *    how the managed container host gets it without any configuration;
+ * 3. `yt-dlp` from PATH, which is the normal development setup.
+ */
+export function ytdlpPathFromEnv(
+  env: RawEnv = process.env,
+  exists: (path: string) => boolean = existsSync,
+): string {
+  const configured = env.YTDLP_PATH?.trim();
+  if (configured !== undefined && configured !== '') {
+    return configured;
+  }
+  const local = localYtDlpPath();
+  return exists(local) ? local : DEFAULTS.ytdlpPath;
 }
 
 /**
@@ -135,7 +153,7 @@ export function loadConfig(env: RawEnv = process.env): AppConfig {
       issues,
     ),
     ffmpegPath: optionalString(env, 'FFMPEG_PATH', DEFAULTS.ffmpegPath),
-    ytdlpPath: optionalString(env, 'YTDLP_PATH', DEFAULTS.ytdlpPath),
+    ytdlpPath: ytdlpPathFromEnv(env),
     maxPlaylistTracks: optionalInteger(
       env,
       'MAX_PLAYLIST_TRACKS',

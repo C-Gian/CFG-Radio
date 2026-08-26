@@ -3,6 +3,9 @@ node_modules/
 
 # Build output
 dist/
+
+# Bootstrapped executables (yt-dlp is downloaded, never committed)
+bin/
 coverage/
 *.tsbuildinfo
 

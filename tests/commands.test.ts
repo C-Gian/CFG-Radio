@@ -18,12 +18,16 @@ import { queue } from '../src/discord/commands/queue.js';
 import { resume } from '../src/discord/commands/resume.js';
 import { skip } from '../src/discord/commands/skip.js';
 import { stop } from '../src/discord/commands/stop.js';
+import { volume } from '../src/discord/commands/volume.js';
+import { shuffle } from '../src/discord/commands/shuffle.js';
+import { loop } from '../src/discord/commands/loop.js';
 import { LOCAL_ASSETS } from '../src/audio/local-catalog.js';
 import { localTrack } from './helpers/fake-transport.js';
 import { contextWithPlayer, fakeChatInput, fakeContext, replyContent } from './helpers/context.js';
 
 const EXPECTED_COMMANDS = [
   'disconnect',
+  'loop',
   'nowplaying',
   'pause',
   'ping',
@@ -31,8 +35,10 @@ const EXPECTED_COMMANDS = [
   'playlocal',
   'queue',
   'resume',
+  'shuffle',
   'skip',
   'stop',
+  'volume',
 ];
 
 function fakeCommand(name: string): Command {
@@ -43,7 +49,7 @@ function fakeCommand(name: string): Command {
 }
 
 describe('command registry', () => {
-  it('ships every milestone 3 command', () => {
+  it('ships the complete milestone 6 command set', () => {
     const registry = createCommandRegistry(commands);
 
     expect([...registry.keys()].sort()).toEqual(EXPECTED_COMMANDS);
@@ -57,6 +63,9 @@ describe('command registry', () => {
     expect(registry.get('queue')).toBe(queue);
     expect(registry.get('nowplaying')).toBe(nowPlaying);
     expect(registry.get('disconnect')).toBe(disconnect);
+    expect(registry.get('volume')).toBe(volume);
+    expect(registry.get('shuffle')).toBe(shuffle);
+    expect(registry.get('loop')).toBe(loop);
   });
 
   it('rejects duplicated command names', () => {
@@ -147,10 +156,19 @@ describe('voice channel policy for mutating commands', () => {
     ['skip', skip],
     ['stop', stop],
     ['disconnect', disconnect],
+    ['volume', volume],
+    ['shuffle', shuffle],
+    ['loop', loop],
   ])('/%s refuses a user in another voice channel', async (_name, command) => {
     const { context, player } = contextWithPlayer('guild-1', 'vc-1');
     await player.enqueue(localTrack('a'));
-    const { interaction, reply } = fakeChatInput({ userChannelId: 'vc-2' });
+    const options =
+      command === volume
+        ? { integerOptions: { level: 50 } }
+        : command === loop
+          ? { stringOptions: { mode: 'track' } }
+          : {};
+    const { interaction, reply } = fakeChatInput({ userChannelId: 'vc-2', ...options });
 
     await command.execute(interaction, context);
 
@@ -172,16 +190,17 @@ describe('voice channel policy for mutating commands', () => {
   });
 
   it.each([
-    ['queue', queue],
-    ['nowplaying', nowPlaying],
-  ])('/%s is read-only and works from outside the voice channel', async (_name, command) => {
+    ['queue', queue, 'Track a'],
+    ['nowplaying', nowPlaying, 'Track a'],
+    ['volume', volume, 'Volume is'],
+  ])('/%s is read-only and works from outside the voice channel', async (_name, command, text) => {
     const { context, player } = contextWithPlayer('guild-1', 'vc-1');
     await player.enqueue(localTrack('a'));
     const { interaction, reply } = fakeChatInput({ userChannelId: null });
 
     await command.execute(interaction, context);
 
-    expect(replyContent(reply)).toContain('Track a');
+    expect(replyContent(reply)).toContain(text);
   });
 
   it.each([
@@ -192,9 +211,13 @@ describe('voice channel policy for mutating commands', () => {
     ['queue', queue],
     ['nowplaying', nowPlaying],
     ['disconnect', disconnect],
+    ['volume', volume],
+    ['shuffle', shuffle],
+    ['loop', loop],
   ])('/%s is guild only', async (_name, command) => {
     const { context } = fakeContext();
-    const { interaction, reply } = fakeChatInput({ guildId: null });
+    const options = command === loop ? { stringOptions: { mode: 'off' } } : {};
+    const { interaction, reply } = fakeChatInput({ guildId: null, ...options });
 
     await command.execute(interaction, context);
 
@@ -237,6 +260,24 @@ describe('/pause and /resume', () => {
     await resume.execute(interaction, context);
 
     expect(replyContent(reply)).toContain('Nothing is playing');
+  });
+
+  it.each([
+    ['pause', pause],
+    ['resume', resume],
+  ])('/%s acknowledges before its serialised player operation', async (_name, command) => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+    if (command === resume) {
+      await player.pause();
+    }
+    const call = fakeChatInput();
+
+    await command.execute(call.interaction, context);
+
+    expect(call.deferReply).toHaveBeenCalledTimes(1);
+    expect(call.editReply).toHaveBeenCalledTimes(1);
+    expect(call.interactionReply).not.toHaveBeenCalled();
   });
 });
 

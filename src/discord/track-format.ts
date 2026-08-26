@@ -10,6 +10,16 @@ const STATUS_LABEL: Record<PlayerStatus, string> = {
   paused: 'Paused',
 };
 
+const LOOP_LABEL: Record<PlayerSnapshot['loopMode'], string> = {
+  off: 'Off',
+  track: 'Track',
+  queue: 'Queue',
+};
+
+function settingsLine(snapshot: PlayerSnapshot): string {
+  return `Volume: **${snapshot.volume}%** · Loop: **${LOOP_LABEL[snapshot.loopMode]}**`;
+}
+
 /** `mm:ss` (or `h:mm:ss`), or `unknown length` when the source cannot tell. */
 export function formatDuration(durationMs: number | undefined): string {
   if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs < 0) {
@@ -46,6 +56,7 @@ export function formatNowPlaying(snapshot: PlayerSnapshot): string {
     `Length: ${formatDuration(current.durationMs)}`,
     `Requested by: ${requester(current)}`,
     `Up next: ${snapshot.upcoming.length} track(s) in the queue.`,
+    settingsLine(snapshot),
   ].join('\n');
 }
 
@@ -65,7 +76,7 @@ export function formatQueue(snapshot: PlayerSnapshot, pageSize = QUEUE_PAGE_SIZE
   );
 
   if (upcoming.length === 0) {
-    lines.push('', 'Nothing queued after this one.');
+    lines.push('', 'Nothing queued after this one.', '', settingsLine(snapshot));
     return lines.join('\n');
   }
 
@@ -78,6 +89,8 @@ export function formatQueue(snapshot: PlayerSnapshot, pageSize = QUEUE_PAGE_SIZE
   if (hidden > 0) {
     lines.push(`...and ${hidden} more.`);
   }
+
+  lines.push('', settingsLine(snapshot));
 
   return lines.join('\n');
 }

@@ -47,7 +47,7 @@ export function decidePlayLocal(input: VoicePolicyInput): PlayLocalDecision {
 
 /**
  * Whether a user may run a mutating command (`/pause`, `/resume`, `/skip`,
- * `/stop`, `/disconnect`).
+ * `/stop`, `/volume level`, `/shuffle`, `/loop`, `/disconnect`).
  *
  * While the bot is connected, only members of its own channel may control it.
  * When it is not connected there is nothing to protect, so the command runs

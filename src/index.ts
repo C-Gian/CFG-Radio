@@ -37,6 +37,8 @@ async function main(): Promise<void> {
     voice,
     resolve: createTrackResolver({ ytdlp }),
     logger,
+    defaultVolume: config.defaultVolume,
+    idleDisconnectSeconds: config.idleDisconnectSeconds,
   });
   const youtube = {
     ...createYouTubeMetadataProvider(ytdlp),

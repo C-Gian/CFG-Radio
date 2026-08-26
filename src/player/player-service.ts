@@ -7,6 +7,8 @@ export interface PlayerServiceOptions {
   readonly voice: VoiceSessionManager;
   readonly resolve: TrackResolver;
   readonly logger: Logger;
+  readonly defaultVolume?: number;
+  readonly idleDisconnectSeconds?: number;
 }
 
 /**
@@ -21,15 +23,22 @@ export class PlayerService {
   private readonly voice: VoiceSessionManager;
   private readonly resolve: TrackResolver;
   private readonly logger: Logger;
+  private readonly defaultVolume: number;
+  private readonly idleDisconnectSeconds: number;
+  private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly idleEpochs = new Map<string, number>();
 
   constructor(options: PlayerServiceOptions) {
     this.voice = options.voice;
     this.resolve = options.resolve;
     this.logger = options.logger;
+    this.defaultVolume = options.defaultVolume ?? 100;
+    this.idleDisconnectSeconds = options.idleDisconnectSeconds ?? 300;
 
     // A session can disappear on its own (kick, lost connection): the player
     // must not survive its transport.
     this.voice.onSessionDestroyed((guildId) => {
+      this.cancelIdleTimer(guildId);
       const player = this.players.get(guildId);
       this.players.delete(guildId);
       player?.destroy();
@@ -63,9 +72,14 @@ export class PlayerService {
       transport: session,
       resolve: this.resolve,
       logger: this.logger,
+      defaultVolume: this.defaultVolume,
+      onIdleChange: (idle) => {
+        this.updateIdleTimer(request.guildId, idle);
+      },
     });
 
     this.players.set(request.guildId, player);
+    this.updateIdleTimer(request.guildId, player.isIdle);
     return player;
   }
 
@@ -75,6 +89,7 @@ export class PlayerService {
    * @returns `true` when there was something to tear down.
    */
   destroy(guildId: string): boolean {
+    this.cancelIdleTimer(guildId);
     const player = this.players.get(guildId);
     this.players.delete(guildId);
     player?.destroy();
@@ -90,5 +105,48 @@ export class PlayerService {
     // Any session without a player (join succeeded, player never created).
     this.voice.destroyAll();
     this.logger.debug('All guild players destroyed');
+  }
+
+  private updateIdleTimer(guildId: string, idle: boolean): void {
+    if (!idle) {
+      this.cancelIdleTimer(guildId);
+      return;
+    }
+    if (this.idleDisconnectSeconds === 0 || this.idleTimers.has(guildId)) {
+      return;
+    }
+    const player = this.players.get(guildId);
+    if (player === undefined) {
+      return;
+    }
+
+    const epoch = (this.idleEpochs.get(guildId) ?? 0) + 1;
+    this.idleEpochs.set(guildId, epoch);
+    const delayMs = this.idleDisconnectSeconds * 1000;
+    const timer = setTimeout(() => {
+      if (
+        this.idleEpochs.get(guildId) !== epoch ||
+        this.players.get(guildId) !== player ||
+        !player.isIdle
+      ) {
+        return;
+      }
+      this.idleTimers.delete(guildId);
+      this.logger.info(`Idle disconnect in guild ${guildId} after ${this.idleDisconnectSeconds}s`);
+      this.destroy(guildId);
+    }, delayMs);
+    this.idleTimers.set(guildId, timer);
+    this.logger.debug(`Idle timer scheduled in guild ${guildId}: ${this.idleDisconnectSeconds}s`);
+  }
+
+  private cancelIdleTimer(guildId: string): void {
+    const timer = this.idleTimers.get(guildId);
+    this.idleEpochs.set(guildId, (this.idleEpochs.get(guildId) ?? 0) + 1);
+    if (timer === undefined) {
+      return;
+    }
+    clearTimeout(timer);
+    this.idleTimers.delete(guildId);
+    this.logger.debug(`Idle timer cancelled in guild ${guildId}`);
   }
 }

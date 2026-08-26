@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PlayerSnapshot, PlayerStatus } from '../src/player/guild-player.js';
+import type { LoopMode, PlayerSnapshot, PlayerStatus } from '../src/player/guild-player.js';
 import { createTrack, type Track } from '../src/player/track.js';
 import {
   QUEUE_PAGE_SIZE,
@@ -24,8 +24,10 @@ function snapshot(
   current: Track | undefined,
   upcoming: readonly Track[] = [],
   status: PlayerStatus = 'playing',
+  volume = 50,
+  loopMode: LoopMode = 'off',
 ): PlayerSnapshot {
-  return { status, current, upcoming };
+  return { status, current, upcoming, volume, loopMode };
 }
 
 describe('formatDuration', () => {
@@ -62,6 +64,13 @@ describe('formatNowPlaying', () => {
 
   it('shows the paused state', () => {
     expect(formatNowPlaying(snapshot(track('Arpeggio'), [], 'paused'))).toContain('Paused');
+  });
+
+  it('shows current volume and a non-off loop mode compactly', () => {
+    const message = formatNowPlaying(snapshot(track('Arpeggio'), [], 'playing', 65, 'track'));
+
+    expect(message).toContain('Volume: **65%**');
+    expect(message).toContain('Loop: **Track**');
   });
 
   it('handles a track of unknown length', () => {
@@ -123,5 +132,15 @@ describe('formatQueue', () => {
     const upcoming = Array.from({ length: 100 }, (_value, index) => track(`Track ${index}`));
 
     expect(formatQueue(snapshot(track('Current'), upcoming)).length).toBeLessThan(2000);
+  });
+
+  it('adds volume and loop settings without changing FIFO content', () => {
+    const message = formatQueue(
+      snapshot(track('Current'), [track('First')], 'playing', 0, 'queue'),
+    );
+
+    expect(message).toContain('1. **First**');
+    expect(message).toContain('Volume: **0%**');
+    expect(message).toContain('Loop: **Queue**');
   });
 });

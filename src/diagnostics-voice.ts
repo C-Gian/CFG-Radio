@@ -2,6 +2,7 @@ import 'dotenv/config';
 
 import { generateDependencyReport } from '@discordjs/voice';
 import { getCiphers } from 'node:crypto';
+import { createReadStream } from 'node:fs';
 
 import { FfmpegPipeline, collectPipelineOutput, probeFfmpeg } from './audio/ffmpeg.js';
 import {
@@ -13,6 +14,7 @@ import {
 } from './audio/local-catalog.js';
 import { ffmpegPathFromEnv } from './config/env.js';
 import { createLogger } from './logger.js';
+import { createVolumeResource } from './voice/volume-resource.js';
 
 /** Ciphers Discord voice can use without any native dependency. */
 const REQUIRED_CIPHERS = ['aes-256-gcm'];
@@ -90,6 +92,41 @@ async function main(): Promise<void> {
       } finally {
         pipeline.stop();
       }
+    }
+  }
+
+  if (readable.length > 0) {
+    console.log('=== Live volume pipeline (Ogg/Opus -> PCM gain -> Opus) ===');
+    const firstAsset = readable[0];
+    if (firstAsset === undefined) {
+      throw new Error('The readable asset list changed unexpectedly');
+    }
+    const input = createReadStream(localAssetPath(firstAsset));
+    const resource = createVolumeResource(input, 0);
+    try {
+      for (const [label, level] of [
+        ['0%', 0],
+        ['50%', 0.5],
+        ['100%', 1],
+      ] as const) {
+        resource.volume?.setVolume(level);
+        const applied = resource.volume?.volume === level;
+        console.log(`  ${label}: ${applied ? 'applied' : 'FAILED'}`);
+        if (!applied) {
+          failures.push(`Inline volume ${label} was not applied`);
+        }
+      }
+      const packet = await new Promise<Buffer>((resolve, reject) => {
+        resource.playStream.once('data', resolve);
+        resource.playStream.once('error', reject);
+      });
+      console.log(`  re-encoded packet: ${packet.byteLength} bytes`);
+      if (packet.byteLength === 0) {
+        failures.push('Inline volume pipeline produced no Opus packet');
+      }
+    } finally {
+      resource.playStream.destroy();
+      input.destroy();
     }
   }
 

@@ -1,5 +1,6 @@
 import {
   InteractionContextType,
+  MessageFlags,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
@@ -22,6 +23,7 @@ export const pause: Command = {
     .setContexts(InteractionContextType.Guild),
 
   async execute(interaction: ChatInputCommandInteraction, context: CommandContext) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
     const access = await requireControlAccess(interaction, context);
     if (access === undefined) {
       return;
@@ -33,6 +35,6 @@ export const pause: Command = {
       return;
     }
 
-    await respond(interaction, MESSAGES[player.pause()]);
+    await respond(interaction, MESSAGES[await player.pause()]);
   },
 };

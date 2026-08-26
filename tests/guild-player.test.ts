@@ -62,7 +62,7 @@ describe('GuildPlayer - starting and queueing', () => {
     const { player, transport } = createPlayer();
     const first = localTrack('a');
     await player.enqueue(first);
-    player.pause();
+    await player.pause();
 
     const result = await player.enqueue(localTrack('b'));
 
@@ -122,7 +122,7 @@ describe('GuildPlayer - atomic batch enqueue', () => {
   it('appends while paused without implicitly resuming', async () => {
     const { player, transport } = createPlayer();
     await player.enqueue(localTrack('current'));
-    player.pause();
+    await player.pause();
 
     await player.enqueueMany([localTrack('a'), localTrack('b')]);
 
@@ -240,9 +240,9 @@ describe('GuildPlayer - pause and resume', () => {
     const { player, transport } = createPlayer();
     await player.enqueue(localTrack('a'));
 
-    expect(player.pause()).toBe('paused');
+    await expect(player.pause()).resolves.toBe('paused');
     expect(player.snapshot().status).toBe('paused');
-    expect(player.resume()).toBe('resumed');
+    await expect(player.resume()).resolves.toBe('resumed');
     expect(player.snapshot().status).toBe('playing');
     expect(transport.paused).toBe(false);
   });
@@ -251,16 +251,16 @@ describe('GuildPlayer - pause and resume', () => {
     const { player } = createPlayer();
     await player.enqueue(localTrack('a'));
 
-    expect(player.resume()).toBe('already-playing');
-    player.pause();
-    expect(player.pause()).toBe('already-paused');
+    await expect(player.resume()).resolves.toBe('already-playing');
+    await player.pause();
+    await expect(player.pause()).resolves.toBe('already-paused');
   });
 
-  it('reports nothing playing when idle', () => {
+  it('reports nothing playing when idle', async () => {
     const { player } = createPlayer();
 
-    expect(player.pause()).toBe('nothing-playing');
-    expect(player.resume()).toBe('nothing-playing');
+    await expect(player.pause()).resolves.toBe('nothing-playing');
+    await expect(player.resume()).resolves.toBe('nothing-playing');
   });
 
   it('keeps the queue untouched', async () => {
@@ -268,8 +268,8 @@ describe('GuildPlayer - pause and resume', () => {
     await player.enqueue(localTrack('a'));
     await player.enqueue(localTrack('b'));
 
-    player.pause();
-    player.resume();
+    await player.pause();
+    await player.resume();
 
     expect(player.snapshot().upcoming).toHaveLength(1);
   });
@@ -279,7 +279,7 @@ describe('GuildPlayer - pause and resume', () => {
     await player.enqueue(localTrack('a'));
     transport.setPauseSucceeds(false);
 
-    expect(player.pause()).toBe('nothing-playing');
+    await expect(player.pause()).resolves.toBe('nothing-playing');
     expect(player.snapshot().status).toBe('playing');
   });
 });
@@ -338,7 +338,7 @@ describe('GuildPlayer - skip', () => {
     const { player } = createPlayer();
     await player.enqueue(localTrack('a'));
     await player.enqueue(localTrack('b'));
-    player.pause();
+    await player.pause();
 
     const result = await player.skip();
 

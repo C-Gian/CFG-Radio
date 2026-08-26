@@ -47,6 +47,24 @@ export class TrackQueue {
     this.tracks.length = 0;
   }
 
+  /** Randomises upcoming tracks in place with an unbiased Fisher-Yates pass. */
+  shuffle(random: () => number = Math.random): void {
+    for (let index = this.tracks.length - 1; index > 0; index -= 1) {
+      const value = random();
+      if (!Number.isFinite(value) || value < 0 || value >= 1) {
+        throw new RangeError('The shuffle random source must return a value from 0 up to 1');
+      }
+      const other = Math.floor(value * (index + 1));
+      const currentTrack = this.tracks[index];
+      const otherTrack = this.tracks[other];
+      if (currentTrack === undefined || otherTrack === undefined) {
+        throw new Error('Queue changed unexpectedly while it was being shuffled');
+      }
+      this.tracks[index] = otherTrack;
+      this.tracks[other] = currentTrack;
+    }
+  }
+
   /**
    * A read-only copy of the pending tracks, in play order.
    *

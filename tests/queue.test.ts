@@ -105,4 +105,32 @@ describe('TrackQueue', () => {
     expect(queue.isEmpty).toBe(true);
     expect(queue.size).toBe(0);
   });
+
+  it('shuffles deterministically while preserving every identity exactly once', () => {
+    const queue = new TrackQueue();
+    const entries = [track('a'), track('b'), track('c'), track('d')];
+    queue.enqueueMany(entries);
+
+    queue.shuffle(() => 0);
+
+    expect(queue.list()).toEqual([entries[1], entries[2], entries[3], entries[0]]);
+    expect(new Set(queue.list())).toEqual(new Set(entries));
+  });
+
+  it('leaves empty and one-item queues unchanged', () => {
+    const queue = new TrackQueue();
+    queue.shuffle(() => 0);
+    const only = track('only');
+    queue.enqueue(only);
+    queue.shuffle(() => 0);
+    expect(queue.list()).toEqual([only]);
+  });
+
+  it('rejects an invalid injected random source', () => {
+    const queue = new TrackQueue();
+    queue.enqueueMany([track('a'), track('b')]);
+    expect(() => {
+      queue.shuffle(() => 1);
+    }).toThrow(/random source/);
+  });
 });

@@ -10,16 +10,16 @@ import type { CommandContext } from '../context.js';
 import { requireControlAccess, respond } from '../guild-access.js';
 
 const MESSAGES = {
-  resumed: 'Resumed.',
-  'already-playing': 'Playback is already running.',
-  'nothing-playing': 'Nothing is playing right now.',
+  empty: 'The queue is empty.',
+  'one-track': 'There is only one track in the queue.',
+  shuffled: 'Queue shuffled.',
 } as const;
 
-/** Resumes a paused track. The queue is left untouched. */
-export const resume: Command = {
+/** Randomises upcoming tracks without interrupting the current one. */
+export const shuffle: Command = {
   data: new SlashCommandBuilder()
-    .setName('resume')
-    .setDescription('Resumes a paused track.')
+    .setName('shuffle')
+    .setDescription('Shuffles the upcoming tracks.')
     .setContexts(InteractionContextType.Guild),
 
   async execute(interaction: ChatInputCommandInteraction, context: CommandContext) {
@@ -30,11 +30,7 @@ export const resume: Command = {
     }
 
     const player = context.players.get(access.guild.id);
-    if (player === undefined) {
-      await respond(interaction, MESSAGES['nothing-playing']);
-      return;
-    }
-
-    await respond(interaction, MESSAGES[await player.resume()]);
+    const result = player === undefined ? 'empty' : await player.shuffle();
+    await respond(interaction, MESSAGES[result]);
   },
 };

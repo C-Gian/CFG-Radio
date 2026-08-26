@@ -137,6 +137,7 @@ export interface FakeInteractionOptions {
   userId?: string;
   userChannelId?: string | null;
   stringOptions?: Record<string, string>;
+  integerOptions?: Record<string, number>;
   /** Permissions the bot is missing in the user's channel. */
   missingPermissions?: boolean;
 }
@@ -179,6 +180,7 @@ export function fakeChatInput(options: FakeInteractionOptions = {}) {
     deferReply,
     options: {
       getString: (name: string) => options.stringOptions?.[name] ?? null,
+      getInteger: (name: string) => options.integerOptions?.[name] ?? null,
     },
     guild:
       guildId === null

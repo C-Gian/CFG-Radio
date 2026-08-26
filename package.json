@@ -27,7 +27,8 @@
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
     "discord.js": "^14.27.0",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "opusscript": "^0.0.8"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

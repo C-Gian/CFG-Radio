@@ -1,21 +1,21 @@
 import {
   AudioPlayerStatus,
   NoSubscriberBehavior,
-  StreamType,
   VoiceConnectionDisconnectReason,
   VoiceConnectionStatus,
   createAudioPlayer,
-  createAudioResource,
   entersState,
   joinVoiceChannel,
   type AudioPlayer,
   type DiscordGatewayAdapterCreator,
   type VoiceConnection,
+  type AudioResource,
 } from '@discordjs/voice';
 
 import { FfmpegPipeline } from '../audio/ffmpeg.js';
 import type { PlayableSource, PlaybackTransport } from '../player/transport.js';
 import type { Logger } from '../logger.js';
+import { assertVolumeScalar, createVolumeResource } from './volume-resource.js';
 
 /** How long the gateway handshake may take before we give up and clean up. */
 export const CONNECTION_READY_TIMEOUT_MS = 15_000;
@@ -62,6 +62,8 @@ export class VoiceSession implements VoiceSessionHandle {
   private readonly onDestroyed: ((guildId: string) => void) | undefined;
 
   private pipeline: FfmpegPipeline | undefined;
+  private resource: AudioResource<null> | undefined;
+  private volume = 1;
   private destroyed = false;
   /** Set while we stop playback ourselves, so the Idle that follows is not a track end. */
   private stoppingOnPurpose = false;
@@ -157,7 +159,8 @@ export class VoiceSession implements VoiceSessionHandle {
     this.pipeline = pipeline;
 
     try {
-      const resource = createAudioResource(pipeline.output, { inputType: StreamType.OggOpus });
+      const resource = createVolumeResource(pipeline.output, this.volume);
+      this.resource = resource;
       this.player.play(resource);
       await entersState(this.player, AudioPlayerStatus.Playing, PLAYBACK_START_TIMEOUT_MS);
       this.logger.info(`Playback started in guild ${this.guildId}`);
@@ -178,6 +181,13 @@ export class VoiceSession implements VoiceSessionHandle {
     return this.player.unpause();
   }
 
+  /** Changes gain immediately without restarting or re-resolving the track. */
+  setVolume(volume: number): void {
+    assertVolumeScalar(volume);
+    this.volume = volume;
+    this.resource?.volume?.setVolume(volume);
+  }
+
   /**
    * Stops the player and kills the current FFmpeg process. Idempotent.
    *
@@ -193,6 +203,8 @@ export class VoiceSession implements VoiceSessionHandle {
     }
     this.pipeline?.stop();
     this.pipeline = undefined;
+    this.resource?.playStream.destroy();
+    this.resource = undefined;
   }
 
   /** Stops playback and destroys the voice connection. Idempotent. */
@@ -228,6 +240,7 @@ export class VoiceSession implements VoiceSessionHandle {
       const deliberate = this.stoppingOnPurpose;
       this.pipeline?.stop();
       this.pipeline = undefined;
+      this.resource = undefined;
 
       if (deliberate || this.destroyed) {
         return;

@@ -9,6 +9,9 @@ import { queue } from './queue.js';
 import { resume } from './resume.js';
 import { skip } from './skip.js';
 import { stop } from './stop.js';
+import { volume } from './volume.js';
+import { shuffle } from './shuffle.js';
+import { loop } from './loop.js';
 
 /** Every slash command shipped by the bot. */
 export const commands: readonly Command[] = [
@@ -21,5 +24,8 @@ export const commands: readonly Command[] = [
   stop,
   queue,
   nowPlaying,
+  volume,
+  shuffle,
+  loop,
   disconnect,
 ];

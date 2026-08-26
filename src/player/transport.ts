@@ -36,6 +36,8 @@ export interface PlaybackTransport {
   pause(): boolean;
   /** @returns `true` when the transport actually resumed. */
   resume(): boolean;
+  /** Changes live output gain. `volume` is a scalar from 0 (mute) to 1. */
+  setVolume(volume: number): void;
   /** Stops playback and releases the pipeline. Idempotent, never emits a track end. */
   stopPlayback(): void;
   /** Registers the listener notified when a track ends *on its own*. */

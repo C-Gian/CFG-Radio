@@ -12,6 +12,7 @@ import type { Logger } from '../logger.js';
 export const MAX_CONSECUTIVE_FAILURES = 3;
 
 export type PlayerStatus = 'idle' | 'playing' | 'paused';
+export type LoopMode = 'off' | 'track' | 'queue';
 
 export type EnqueueResult =
   | { readonly kind: 'started'; readonly track: Track }
@@ -29,6 +30,7 @@ export type EnqueueManyResult =
 
 export type PauseResult = 'paused' | 'already-paused' | 'nothing-playing';
 export type ResumeResult = 'resumed' | 'already-playing' | 'nothing-playing';
+export type ShuffleResult = 'empty' | 'one-track' | 'shuffled';
 
 export interface SkipResult {
   readonly skipped: Track | undefined;
@@ -39,6 +41,8 @@ export interface PlayerSnapshot {
   readonly status: PlayerStatus;
   readonly current: Track | undefined;
   readonly upcoming: readonly Track[];
+  readonly volume: number;
+  readonly loopMode: LoopMode;
 }
 
 export interface GuildPlayerOptions {
@@ -46,6 +50,9 @@ export interface GuildPlayerOptions {
   readonly transport: PlaybackTransport;
   readonly resolve: TrackResolver;
   readonly logger: Logger;
+  readonly defaultVolume?: number;
+  /** Reports transitions into and out of true voice-idle state. */
+  readonly onIdleChange?: (idle: boolean) => void;
 }
 
 /**
@@ -66,10 +73,17 @@ export class GuildPlayer {
   private readonly transport: PlaybackTransport;
   private readonly resolve: TrackResolver;
   private readonly logger: Logger;
+  private readonly onIdleChange: ((idle: boolean) => void) | undefined;
 
   private currentTrack: Track | undefined;
   private status: PlayerStatus = 'idle';
+  private volume: number;
+  private loopMode: LoopMode = 'off';
+  /** Distinguishes repeated playbacks of the same logical Track in loop modes. */
+  private playbackGeneration = 0;
   private destroyed = false;
+  private operationInProgress = false;
+  private lastReportedIdle: boolean | undefined;
   private chain: Promise<unknown> = Promise.resolve();
 
   constructor(options: GuildPlayerOptions) {
@@ -77,6 +91,10 @@ export class GuildPlayer {
     this.transport = options.transport;
     this.resolve = options.resolve;
     this.logger = options.logger;
+    this.onIdleChange = options.onIdleChange;
+    this.volume = options.defaultVolume ?? 100;
+    assertVolume(this.volume);
+    this.transport.setVolume(this.volume / 100);
 
     this.transport.onTrackEnd(() => {
       // Captured now: by the time the operation runs, `/stop` or `/skip` may
@@ -85,12 +103,14 @@ export class GuildPlayer {
       if (ended === undefined) {
         return;
       }
-      void this.serialize(() => this.handleTrackEnd(ended));
+      const generation = this.playbackGeneration;
+      void this.serialize(() => this.handleTrackEnd(ended, generation));
     });
 
     this.transport.onPlaybackError((error) => {
       const failed = this.currentTrack;
-      void this.serialize(() => this.handlePlaybackError(failed, error));
+      const generation = this.playbackGeneration;
+      void this.serialize(() => this.handlePlaybackError(failed, generation, error));
     });
   }
 
@@ -103,7 +123,19 @@ export class GuildPlayer {
       status: this.status,
       current: this.currentTrack,
       upcoming: this.queue.list(),
+      volume: this.volume,
+      loopMode: this.loopMode,
     };
+  }
+
+  /** True only when no current, queued or starting playback exists. */
+  get isIdle(): boolean {
+    return (
+      !this.destroyed &&
+      !this.operationInProgress &&
+      this.currentTrack === undefined &&
+      this.queue.isEmpty
+    );
   }
 
   /** Resolves once every pending operation has settled. */
@@ -183,34 +215,72 @@ export class GuildPlayer {
     });
   }
 
-  pause(): PauseResult {
-    if (this.currentTrack === undefined) {
-      return 'nothing-playing';
-    }
-    if (this.status === 'paused') {
-      return 'already-paused';
-    }
-    if (!this.transport.pause()) {
-      return 'nothing-playing';
-    }
-    this.status = 'paused';
-    this.logger.info(`Paused playback in guild ${this.guildId}`);
-    return 'paused';
+  pause(): Promise<PauseResult> {
+    return this.serialize(() => {
+      if (this.currentTrack === undefined) {
+        return Promise.resolve('nothing-playing');
+      }
+      if (this.status === 'paused') {
+        return Promise.resolve('already-paused');
+      }
+      if (!this.transport.pause()) {
+        return Promise.resolve('nothing-playing');
+      }
+      this.status = 'paused';
+      this.logger.info(`Paused playback in guild ${this.guildId}`);
+      return Promise.resolve('paused');
+    });
   }
 
-  resume(): ResumeResult {
-    if (this.currentTrack === undefined) {
-      return 'nothing-playing';
-    }
-    if (this.status === 'playing') {
-      return 'already-playing';
-    }
-    if (!this.transport.resume()) {
-      return 'nothing-playing';
-    }
-    this.status = 'playing';
-    this.logger.info(`Resumed playback in guild ${this.guildId}`);
-    return 'resumed';
+  resume(): Promise<ResumeResult> {
+    return this.serialize(() => {
+      if (this.currentTrack === undefined) {
+        return Promise.resolve('nothing-playing');
+      }
+      if (this.status === 'playing') {
+        return Promise.resolve('already-playing');
+      }
+      if (!this.transport.resume()) {
+        return Promise.resolve('nothing-playing');
+      }
+      this.status = 'playing';
+      this.logger.info(`Resumed playback in guild ${this.guildId}`);
+      return Promise.resolve('resumed');
+    });
+  }
+
+  /** Applies and retains a per-session volume percentage. */
+  setVolume(level: number): Promise<number> {
+    assertVolume(level);
+    return this.serialize(() => {
+      this.volume = level;
+      this.transport.setVolume(level / 100);
+      this.logger.info(`Volume changed in guild ${this.guildId}: ${level}%`);
+      return Promise.resolve(level);
+    });
+  }
+
+  /** Randomises only the upcoming FIFO tracks; current playback is untouched. */
+  shuffle(random: () => number = Math.random): Promise<ShuffleResult> {
+    return this.serialize(() => {
+      if (this.queue.isEmpty) {
+        return Promise.resolve('empty');
+      }
+      if (this.queue.size === 1) {
+        return Promise.resolve('one-track');
+      }
+      this.queue.shuffle(random);
+      this.logger.info(`Queue shuffled in guild ${this.guildId}: ${this.queue.size} track(s)`);
+      return Promise.resolve('shuffled');
+    });
+  }
+
+  setLoopMode(mode: LoopMode): Promise<LoopMode> {
+    return this.serialize(() => {
+      this.loopMode = mode;
+      this.logger.info(`Loop changed in guild ${this.guildId}: ${mode}`);
+      return Promise.resolve(mode);
+    });
   }
 
   /**
@@ -242,11 +312,13 @@ export class GuildPlayer {
    */
   stop(): Promise<boolean> {
     return this.serialize(() => {
-      const hadSomething = this.currentTrack !== undefined || !this.queue.isEmpty;
+      const hadSomething =
+        this.currentTrack !== undefined || !this.queue.isEmpty || this.loopMode !== 'off';
 
       this.currentTrack = undefined;
       this.status = 'idle';
       this.queue.clear();
+      this.loopMode = 'off';
       this.transport.stopPlayback();
 
       if (hadSomething) {
@@ -269,13 +341,24 @@ export class GuildPlayer {
     this.currentTrack = undefined;
     this.status = 'idle';
     this.queue.clear();
+    this.loopMode = 'off';
     this.transport.stopPlayback();
     this.logger.debug(`Player destroyed in guild ${this.guildId}`);
   }
 
   /** Runs `operation` after every previously scheduled one. */
   private serialize<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.chain.then(operation, operation);
+    const run = async (): Promise<T> => {
+      this.operationInProgress = true;
+      this.reportIdleChange();
+      try {
+        return await operation();
+      } finally {
+        this.operationInProgress = false;
+        this.reportIdleChange();
+      }
+    };
+    const result = this.chain.then(run, run);
     this.chain = result.then(
       () => undefined,
       () => undefined,
@@ -283,8 +366,8 @@ export class GuildPlayer {
     return result;
   }
 
-  private async handleTrackEnd(ended: Track): Promise<void> {
-    if (this.destroyed || this.currentTrack !== ended) {
+  private async handleTrackEnd(ended: Track, generation: number): Promise<void> {
+    if (this.destroyed || this.currentTrack !== ended || this.playbackGeneration !== generation) {
       // Superseded by /skip, /stop or a disconnect while we were queued.
       return;
     }
@@ -292,11 +375,37 @@ export class GuildPlayer {
     this.logger.info(`Finished ${describeTrack(ended)} in guild ${this.guildId}`);
     this.currentTrack = undefined;
     this.status = 'idle';
+
+    if (this.loopMode === 'track') {
+      this.logger.info(`Natural track-loop restart in guild ${this.guildId}`);
+      const error = await this.startTrack(ended);
+      if (error === undefined) {
+        return;
+      }
+      // One failed replay is enough: do not turn an unavailable track into an
+      // infinite retry loop. Continue with ordinary queued playback instead.
+      await this.advance();
+      return;
+    }
+
+    if (this.loopMode === 'queue') {
+      this.queue.enqueue(ended);
+      this.logger.info(`Queue-loop re-enqueued a completed track in guild ${this.guildId}`);
+    }
     await this.advance();
   }
 
-  private async handlePlaybackError(failed: Track | undefined, error: unknown): Promise<void> {
-    if (this.destroyed || failed === undefined || this.currentTrack !== failed) {
+  private async handlePlaybackError(
+    failed: Track | undefined,
+    generation: number,
+    error: unknown,
+  ): Promise<void> {
+    if (
+      this.destroyed ||
+      failed === undefined ||
+      this.currentTrack !== failed ||
+      this.playbackGeneration !== generation
+    ) {
       // Nothing was playing, or the failure belongs to a superseded track.
       return;
     }
@@ -357,6 +466,7 @@ export class GuildPlayer {
         return new Error('The player was destroyed while starting the track');
       }
       this.currentTrack = track;
+      this.playbackGeneration += 1;
       this.status = 'playing';
       this.logger.info(`Started ${describeTrack(track)} in guild ${this.guildId}`);
       return undefined;
@@ -373,5 +483,20 @@ export class GuildPlayer {
 
   private isDestroyed(): boolean {
     return this.destroyed;
+  }
+
+  private reportIdleChange(): void {
+    const idle = this.isIdle;
+    if (idle === this.lastReportedIdle) {
+      return;
+    }
+    this.lastReportedIdle = idle;
+    this.onIdleChange?.(idle);
+  }
+}
+
+function assertVolume(level: number): void {
+  if (!Number.isInteger(level) || level < 0 || level > 100) {
+    throw new RangeError('Volume must be an integer between 0 and 100');
   }
 }

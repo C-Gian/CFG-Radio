@@ -12,8 +12,11 @@ import { createTrack, type Track } from '../../src/player/track.js';
  */
 export class FakeTransport implements PlaybackTransport {
   readonly played: PlayableSource[] = [];
+  readonly playedVolumes: number[] = [];
   stopCount = 0;
   paused = false;
+  volume = 1;
+  readonly volumeChanges: number[] = [];
 
   private readonly failing = new Set<string>();
   private trackEndListener: (() => void) | undefined;
@@ -46,6 +49,7 @@ export class FakeTransport implements PlaybackTransport {
       return Promise.reject(new Error(`cannot play ${source.input}`));
     }
     this.played.push(source);
+    this.playedVolumes.push(this.volume);
     this.paused = false;
     return Promise.resolve();
   }
@@ -64,6 +68,11 @@ export class FakeTransport implements PlaybackTransport {
     }
     this.paused = false;
     return true;
+  }
+
+  setVolume(volume: number): void {
+    this.volume = volume;
+    this.volumeChanges.push(volume);
   }
 
   /**

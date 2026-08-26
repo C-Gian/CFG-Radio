@@ -29,6 +29,10 @@ export class PlayerService {
   private readonly idleDisconnectSeconds: number;
   private readonly idleTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly idleEpochs = new Map<string, number>();
+  /** In-flight joins, so simultaneous commands share one voice handshake. */
+  private readonly pendingJoins = new Map<string, Promise<GuildPlayer>>();
+  /** Bumped by every teardown, so a join that lost the race cannot install itself. */
+  private readonly joinEpochs = new Map<string, number>();
 
   constructor(options: PlayerServiceOptions) {
     this.voice = options.voice;
@@ -69,7 +73,34 @@ export class PlayerService {
       return existing;
     }
 
+    // Two /play commands can land while the first handshake is still running:
+    // without this they would each build a session and a player, and the
+    // loser would be silently orphaned but still subscribed to its transport.
+    const pending = this.pendingJoins.get(request.guildId);
+    if (pending !== undefined) {
+      return pending;
+    }
+
+    const attempt = this.createPlayer(request);
+    this.pendingJoins.set(request.guildId, attempt);
+    try {
+      return await attempt;
+    } finally {
+      this.pendingJoins.delete(request.guildId);
+    }
+  }
+
+  private async createPlayer(request: JoinRequest): Promise<GuildPlayer> {
+    const epoch = this.joinEpochs.get(request.guildId) ?? 0;
     const session = await this.voice.join(request);
+
+    if ((this.joinEpochs.get(request.guildId) ?? 0) !== epoch) {
+      // A /disconnect or a shutdown won the race: leaving the fresh session
+      // installed would keep the bot in the channel it was just told to leave.
+      this.voice.destroy(request.guildId);
+      throw new Error('The voice session was disconnected while joining');
+    }
+
     const player = new GuildPlayer({
       guildId: request.guildId,
       transport: session,
@@ -93,6 +124,7 @@ export class PlayerService {
    * @returns `true` when there was something to tear down.
    */
   destroy(guildId: string): boolean {
+    this.joinEpochs.set(guildId, (this.joinEpochs.get(guildId) ?? 0) + 1);
     this.cancelIdleTimer(guildId);
     const player = this.players.get(guildId);
     this.players.delete(guildId);
@@ -103,7 +135,9 @@ export class PlayerService {
 
   /** Tears every guild down. Used by the graceful shutdown path. */
   destroyAll(): void {
-    for (const guildId of [...this.players.keys()]) {
+    // Pending joins included: a handshake that finishes after shutdown must
+    // not resurrect a guild.
+    for (const guildId of new Set([...this.players.keys(), ...this.pendingJoins.keys()])) {
       this.destroy(guildId);
     }
     // Any session without a player (join succeeded, player never created).

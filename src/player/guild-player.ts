@@ -17,6 +17,14 @@ import type { Logger } from '../logger.js';
  */
 export const MAX_CONSECUTIVE_FAILURES = 3;
 
+/**
+ * How long an already resolved source may be used for an immediate start.
+ *
+ * Signed media URLs live for hours, so this only guards against a source that
+ * waited behind an unusually long operation.
+ */
+export const IMMEDIATE_SOURCE_MAX_AGE_MS = 60_000;
+
 class PlaybackCancelledError extends Error {
   constructor() {
     super('Playback attempt was cancelled by a control operation');
@@ -170,14 +178,21 @@ export class GuildPlayer {
    * A paused player keeps its queue growing without resuming: that is an
    * explicit `/resume`.
    */
-  enqueue(track: Track): Promise<EnqueueResult> {
+  enqueue(track: Track, immediateSource?: PlayableSource): Promise<EnqueueResult> {
+    const offeredAt = Date.now();
     return this.serialize(async () => {
       if (this.destroyed) {
         return { kind: 'failed', track, error: new Error('The player is shutting down') };
       }
 
       if (this.status === 'idle' && this.currentTrack === undefined && this.queue.isEmpty) {
-        const error = await this.startTrack(track);
+        // A queued track is always resolved late; only a track starting right
+        // now may reuse the source its command already fetched.
+        const fresh =
+          immediateSource !== undefined && Date.now() - offeredAt <= IMMEDIATE_SOURCE_MAX_AGE_MS
+            ? immediateSource
+            : undefined;
+        const error = await this.startTrack(track, fresh);
         if (error === undefined) {
           return { kind: 'started', track };
         }
@@ -400,7 +415,10 @@ export class GuildPlayer {
     if (this.loopMode === 'track') {
       this.logger.info(`Natural track-loop restart in guild ${this.guildId}`);
       const error = await this.startTrack(ended);
-      if (error === undefined) {
+      if (error === undefined || error instanceof PlaybackCancelledError) {
+        // Cancelled means a control operation is already queued behind us and
+        // owns the transition: pulling the next track forward here would make
+        // a single /skip consume two tracks.
         return;
       }
       // One failed replay is enough: do not turn an unavailable track into an
@@ -478,13 +496,17 @@ export class GuildPlayer {
    *
    * @returns `undefined` on success, or the error that prevented playback.
    */
-  private async startTrack(track: Track): Promise<unknown> {
+  private async startTrack(track: Track, immediateSource?: PlayableSource): Promise<unknown> {
     const attemptEpoch = this.playbackAttemptEpoch;
     let source: PlayableSource;
-    try {
-      source = await this.resolve(track);
-    } catch (error) {
-      return this.tryFallback(track, 'resolution', error, attemptEpoch);
+    if (immediateSource !== undefined) {
+      source = immediateSource;
+    } else {
+      try {
+        source = await this.resolve(track);
+      } catch (error) {
+        return this.tryFallback(track, 'resolution', error, attemptEpoch);
+      }
     }
 
     if (!this.isAttemptCurrent(attemptEpoch)) {

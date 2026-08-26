@@ -30,6 +30,8 @@ export class VoiceSessionManager {
   private readonly logger: Logger;
   private readonly createSession: VoiceSessionFactory;
   private readonly destroyedListeners: ((guildId: string) => void)[] = [];
+  /** In-flight handshakes, so one guild can never open two connections. */
+  private readonly pendingJoins = new Map<string, Promise<VoiceSessionHandle>>();
 
   constructor(options: VoiceSessionManagerOptions) {
     this.ffmpegPath = options.ffmpegPath;
@@ -65,6 +67,21 @@ export class VoiceSessionManager {
       return existing;
     }
 
+    const pending = this.pendingJoins.get(request.guildId);
+    if (pending !== undefined) {
+      return pending;
+    }
+
+    const attempt = this.openSession(request);
+    this.pendingJoins.set(request.guildId, attempt);
+    try {
+      return await attempt;
+    } finally {
+      this.pendingJoins.delete(request.guildId);
+    }
+  }
+
+  private async openSession(request: JoinRequest): Promise<VoiceSessionHandle> {
     const session = await this.createSession({
       guildId: request.guildId,
       channelId: request.channelId,

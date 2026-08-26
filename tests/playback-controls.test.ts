@@ -272,3 +272,50 @@ describe('GuildPlayer queue loop', () => {
     });
   });
 });
+
+describe('GuildPlayer loop cancellation', () => {
+  it('lets a skip during a track-loop restart consume exactly one track', async () => {
+    const transport = new FakeTransport();
+    let releaseRestart: ((source: PlayableSource) => void) | undefined;
+    let calls = 0;
+    const resolve = vi.fn((track: Track): Promise<PlayableSource> => {
+      calls += 1;
+      // Only the loop restart (second resolution of the same track) is slow.
+      if (calls === 2) {
+        return new Promise<PlayableSource>((resolveSource) => {
+          releaseRestart = resolveSource;
+        });
+      }
+      return Promise.resolve(fakeResolver(track));
+    });
+    const player = new GuildPlayer({
+      guildId: 'guild-1',
+      transport,
+      resolve,
+      logger: fakeLogger(),
+    });
+
+    const looped = localTrack('looped');
+    const queued = localTrack('queued');
+    await player.enqueue(looped);
+    await player.enqueue(queued);
+    await player.setLoopMode('track');
+
+    transport.finishTrack();
+    await vi.waitFor(() => {
+      expect(releaseRestart).toBeDefined();
+    });
+
+    // The user skips while the loop restart is still resolving.
+    const skipping = player.skip();
+    releaseRestart?.(fakeResolver(looped));
+    await skipping;
+    await player.whenSettled();
+
+    // The cancelled restart must not also pull the next track forward, or the
+    // single skip would silently consume two tracks.
+    expect(player.current?.sourceId).toBe('queued');
+    expect(transport.played.map((source) => source.input)).toEqual(['looped.opus', 'queued.opus']);
+    expect(player.snapshot().upcoming).toEqual([]);
+  });
+});

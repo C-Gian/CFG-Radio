@@ -30,6 +30,32 @@ class FakeSession extends FakeTransport implements VoiceSessionHandle {
   }
 }
 
+/** Like createService, but the voice handshake only finishes on demand. */
+function createSlowService() {
+  const sessions: FakeSession[] = [];
+  const pending: (() => void)[] = [];
+  const logger = fakeLogger();
+  const voice = new VoiceSessionManager({
+    ffmpegPath: 'ffmpeg',
+    logger,
+    createSession: (options) =>
+      new Promise<FakeSession>((resolve) => {
+        pending.push(() => {
+          const session = new FakeSession(options);
+          sessions.push(session);
+          resolve(session);
+        });
+      }),
+  });
+  const players = new PlayerService({ voice, resolve: fakeResolver, logger });
+  const settleJoins = (): void => {
+    for (const finish of pending.splice(0)) {
+      finish();
+    }
+  };
+  return { players, voice, sessions, settleJoins, pendingCount: () => pending.length };
+}
+
 function createService() {
   const sessions: FakeSession[] = [];
   const logger = fakeLogger();
@@ -144,5 +170,35 @@ describe('PlayerService', () => {
 
     expect(result.kind).toBe('failed');
     expect(sessions[0]?.played).toEqual([]);
+  });
+});
+
+describe('PlayerService concurrent joins', () => {
+  it('creates a single session and player for simultaneous /play commands', async () => {
+    const { players, sessions, settleJoins, pendingCount } = createSlowService();
+
+    const first = players.join(request);
+    const second = players.join(request);
+    // Both commands are already waiting on the same handshake.
+    expect(pendingCount()).toBe(1);
+    settleJoins();
+
+    const [firstPlayer, secondPlayer] = await Promise.all([first, second]);
+
+    expect(secondPlayer).toBe(firstPlayer);
+    expect(sessions).toHaveLength(1);
+    expect(players.get('guild-1')).toBe(firstPlayer);
+  });
+
+  it('does not leave a guild connected when a disconnect wins the join race', async () => {
+    const { players, sessions, settleJoins } = createSlowService();
+
+    const joining = players.join(request);
+    players.destroy('guild-1');
+    settleJoins();
+
+    await expect(joining).rejects.toThrow(/disconnected|cancelled/i);
+    expect(players.get('guild-1')).toBeUndefined();
+    expect(sessions.every((session) => session.destroyCount > 0)).toBe(true);
   });
 });

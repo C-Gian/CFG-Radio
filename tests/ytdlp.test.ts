@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { ProviderError, isProviderError } from '../src/player/provider-error.js';
 import {
   JS_RUNTIME_ARGS,
+  MAX_YTDLP_OUTPUT_BYTES,
   YtDlpRunner,
   classifyYtDlpFailure,
   type YtDlpChild,
@@ -215,5 +216,29 @@ describe('JS runtime arguments', () => {
     expect(JS_RUNTIME_ARGS.indexOf('--no-js-runtimes')).toBeLessThan(
       JS_RUNTIME_ARGS.indexOf('--js-runtimes'),
     );
+  });
+});
+
+describe('YtDlpRunner output limits', () => {
+  it('kills an extraction that floods stdout instead of buffering it', async () => {
+    const { runner, child, logger } = createRunner();
+
+    const promise = runner.json(['--dump-single-json', 'https://example.test']);
+    // One chunk past the ceiling is enough: the child must not keep streaming.
+    child.stdout.write('x'.repeat(MAX_YTDLP_OUTPUT_BYTES + 1));
+
+    await expect(promise).rejects.toMatchObject({ code: 'extractor_failed' });
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('keeps only the head of a flooding stderr', async () => {
+    const { runner, child } = createRunner();
+
+    const promise = runner.run(['--version']);
+    child.finish('ok\n', 0, 'e'.repeat(2 * 1024 * 1024));
+    const result = await promise;
+
+    expect(result.stderr.length).toBeLessThanOrEqual(1024 * 1024);
   });
 });

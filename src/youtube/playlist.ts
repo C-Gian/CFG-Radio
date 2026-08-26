@@ -19,10 +19,24 @@ export interface YouTubePlaylistImport {
   readonly limited: boolean;
 }
 
+/**
+ * How many raw entries are fetched per requested track.
+ *
+ * Unavailable entries are dropped after extraction, so the window overshoots
+ * the cap to keep the usable count intact - while still bounding how much JSON
+ * a multi-thousand-item playlist can push into memory.
+ */
+export const PLAYLIST_FETCH_OVERSHOOT = 2;
+
 /** Flat metadata only: no item formats or direct media URLs are resolved. */
-export function playlistMetadataArgs(playlistUrl: string): string[] {
+export function playlistMetadataArgs(playlistUrl: string, maxTracks?: number): string[] {
+  const window =
+    maxTracks === undefined || !Number.isInteger(maxTracks) || maxTracks < 1
+      ? undefined
+      : maxTracks * PLAYLIST_FETCH_OVERSHOOT;
   return [
     ...JS_RUNTIME_ARGS,
+    ...(window === undefined ? [] : ['--playlist-end', String(window)]),
     '--compat-options',
     'no-youtube-unavailable-videos',
     '--flat-playlist',
@@ -147,7 +161,7 @@ export async function fetchYouTubePlaylist(
   playlistId: string,
   maxTracks: number,
 ): Promise<YouTubePlaylistImport> {
-  const payload = await runner.json(playlistMetadataArgs(playlistUrl));
+  const payload = await runner.json(playlistMetadataArgs(playlistUrl, maxTracks));
   return parseYouTubePlaylist(payload, playlistId, maxTracks);
 }
 

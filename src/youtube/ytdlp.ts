@@ -9,6 +9,16 @@ import type { Logger } from '../logger.js';
 export const DEFAULT_YTDLP_TIMEOUT_MS = 30_000;
 
 /**
+ * Hard ceiling on what one extraction may buffer.
+ *
+ * Playlist extractions already limit their window, but an unexpected payload
+ * must never be able to grow the bot out of memory: past this the child is
+ * killed and the attempt fails like any other provider error.
+ */
+export const MAX_YTDLP_OUTPUT_BYTES = 24 * 1024 * 1024;
+const MAX_YTDLP_STDERR_BYTES = 256 * 1024;
+
+/**
  * yt-dlp enables `deno` by default and prefers it over every other runtime, so
  * asking for Node means clearing the defaults first. CFG Radio deliberately
  * pins the runtime to the Node it already ships with.
@@ -167,9 +177,31 @@ export class YtDlpRunner {
       this.activeRuns.add(abort);
 
       child.stdout?.setEncoding('utf8');
-      child.stdout?.on('data', (chunk: string) => (stdout += chunk));
+      child.stdout?.on('data', (chunk: string) => {
+        stdout += chunk;
+        if (stdout.length > MAX_YTDLP_OUTPUT_BYTES) {
+          finish(() => {
+            kill();
+            this.logger.warn(
+              `yt-dlp produced more than ${MAX_YTDLP_OUTPUT_BYTES} bytes and was stopped`,
+            );
+            reject(
+              new ProviderError(
+                'extractor_failed',
+                'yt-dlp returned an unreasonably large payload',
+              ),
+            );
+          });
+        }
+      });
       child.stderr?.setEncoding('utf8');
-      child.stderr?.on('data', (chunk: string) => (stderr += chunk));
+      child.stderr?.on('data', (chunk: string) => {
+        // Diagnostics only: keep the head, never grow without bound.
+        const remaining = MAX_YTDLP_STDERR_BYTES - stderr.length;
+        if (remaining > 0) {
+          stderr += chunk.length > remaining ? chunk.slice(0, remaining) : chunk;
+        }
+      });
 
       child.on('error', (error: unknown) => {
         finish(() => {

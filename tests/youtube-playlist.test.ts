@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ProviderError } from '../src/player/provider-error.js';
 import {
+  PLAYLIST_FETCH_OVERSHOOT,
   fetchYouTubePlaylist,
   parseYouTubePlaylist,
   playlistItemsToTracks,
@@ -51,6 +52,20 @@ describe('playlist yt-dlp arguments', () => {
     expect(args.at(-1)).toBe(PLAYLIST_URL);
     expect(args).not.toContain('--format');
     expect(args).not.toContain('--no-playlist');
+  });
+
+  it('bounds the extraction window so a huge playlist cannot flood memory', () => {
+    const args = playlistMetadataArgs(PLAYLIST_URL, 100);
+    const index = args.indexOf('--playlist-end');
+
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(args[index + 1]).toBe(String(100 * PLAYLIST_FETCH_OVERSHOOT));
+    // The overshoot keeps the usable count intact when entries are skipped.
+    expect(PLAYLIST_FETCH_OVERSHOOT).toBeGreaterThan(1);
+  });
+
+  it('omits the window when no cap is given', () => {
+    expect(playlistMetadataArgs(PLAYLIST_URL)).not.toContain('--playlist-end');
   });
 
   it('never asks for cookies, accounts, proxies or downloads', () => {
@@ -240,6 +255,6 @@ describe('fetchYouTubePlaylist', () => {
 
     expect(parsed.items).toHaveLength(3);
     expect(json).toHaveBeenCalledTimes(1);
-    expect(json.mock.calls[0]?.[0]).toEqual(playlistMetadataArgs(PLAYLIST_URL));
+    expect(json.mock.calls[0]?.[0]).toEqual(playlistMetadataArgs(PLAYLIST_URL, 100));
   });
 });

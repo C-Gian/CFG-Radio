@@ -29,11 +29,20 @@ export class VoiceSessionManager {
   private readonly ffmpegPath: string;
   private readonly logger: Logger;
   private readonly createSession: VoiceSessionFactory;
+  private readonly destroyedListeners: ((guildId: string) => void)[] = [];
 
   constructor(options: VoiceSessionManagerOptions) {
     this.ffmpegPath = options.ffmpegPath;
     this.logger = options.logger;
     this.createSession = options.createSession ?? ((opts) => VoiceSession.create(opts));
+  }
+
+  /**
+   * Registers a listener called whenever a session goes away - including when
+   * it tears itself down after a kick or a lost connection.
+   */
+  onSessionDestroyed(listener: (guildId: string) => void): void {
+    this.destroyedListeners.push(listener);
   }
 
   get(guildId: string): VoiceSessionHandle | undefined {
@@ -64,6 +73,9 @@ export class VoiceSessionManager {
       logger: this.logger,
       onDestroyed: (guildId) => {
         this.sessions.delete(guildId);
+        for (const listener of this.destroyedListeners) {
+          listener(guildId);
+        }
       },
     });
 

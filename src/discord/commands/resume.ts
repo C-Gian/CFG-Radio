@@ -8,15 +8,17 @@ import type { Command } from '../command.js';
 import type { CommandContext } from '../context.js';
 import { requireControlAccess, respond } from '../guild-access.js';
 
-/**
- * Stops playback, clears the queue and leaves the voice channel.
- *
- * Idempotent: running it while the bot is idle simply says so.
- */
-export const disconnect: Command = {
+const MESSAGES = {
+  resumed: 'Resumed.',
+  'already-playing': 'Playback is already running.',
+  'nothing-playing': 'Nothing is playing right now.',
+} as const;
+
+/** Resumes a paused track. The queue is left untouched. */
+export const resume: Command = {
   data: new SlashCommandBuilder()
-    .setName('disconnect')
-    .setDescription('Stops playback, clears the queue and leaves the voice channel.')
+    .setName('resume')
+    .setDescription('Resumes a paused track.')
     .setContexts(InteractionContextType.Guild),
 
   async execute(interaction: ChatInputCommandInteraction, context: CommandContext) {
@@ -25,13 +27,12 @@ export const disconnect: Command = {
       return;
     }
 
-    const destroyed = context.players.destroy(access.guild.id);
+    const player = context.players.get(access.guild.id);
+    if (player === undefined) {
+      await respond(interaction, MESSAGES['nothing-playing']);
+      return;
+    }
 
-    await respond(
-      interaction,
-      destroyed
-        ? 'Stopped playback, cleared the queue and left the voice channel.'
-        : 'I am not connected to a voice channel here.',
-    );
+    await respond(interaction, MESSAGES[player.resume()]);
   },
 };

@@ -69,26 +69,47 @@ anti-bot evasion technique — in code, dependencies or documentation.
 src/
   audio/
     ffmpeg.ts                FFmpeg child process abstraction (Ogg/Opus on stdout) + probe
-    test-tone.ts             path/validation of the synthetic smoke-test asset
+    local-catalog.ts         synthetic asset catalog + Track -> PlayableSource resolution
   config/env.ts              env validation -> typed AppConfig (throws ConfigError, never logs values)
   discord/
     client.ts                Discord client factory + event wiring
     command.ts               Command contract, registry, REST serialisation
     context.ts               CommandContext handed to every command handler
+    guild-access.ts          shared guild + voice-channel checks for the handlers
     interaction-handler.ts   interaction routing + error handling
+    track-format.ts          pure /queue and /nowplaying message rendering
     commands/                one file per slash command
+  player/
+    track.ts                 Track: provider-agnostic logical identity of a song
+    queue.ts                 pure FIFO TrackQueue
+    guild-player.ts          orchestration: queue, current track, auto-next, controls
+    player-service.ts        one GuildPlayer per guild, tied to its voice session
+    transport.ts             PlaybackTransport / PlayableSource / TrackResolver contracts
   voice/
-    session.ts               VoiceConnection + AudioPlayer + current FFmpeg pipeline
+    session.ts               VoiceConnection + AudioPlayer + FFmpeg (implements the transport)
     session-manager.ts       one session per guild, cleanup entrypoint
-    policy.ts                pure "can I play here?" decision logic
+    policy.ts                pure voice-channel decisions (play / control)
   logger.ts                  leveled logger with secret redaction
   index.ts                   runtime entrypoint (login, graceful shutdown)
   register-commands.ts       one-off guild slash command registration
   diagnostics-voice.ts       npm run diagnostics:voice
-tools/                       maintenance scripts (test tone generation)
+tools/                       maintenance scripts (synthetic asset generation)
 assets/                      synthetic smoke-test audio only (see assets/README.md)
 tests/                       Vitest, pure logic only — no network, no real token, no .env
 ```
+
+Layering, from the command down: **handler → GuildPlayer → TrackResolver → PlaybackTransport
+(VoiceSession) → FFmpeg**. Keep it that way:
+
+- A `Track` is a logical identity. Never put a file path, URL, Discord object, voice connection
+  or audio resource in it.
+- The queue and the player must stay free of discord.js, `@discordjs/voice`, FFmpeg, the
+  filesystem and the network — that is what makes them testable.
+- Turning a `Track` into something playable is the resolver's job. The player must never learn
+  how FFmpeg is spawned.
+- Every state changing player operation goes through the internal serialisation chain, and a
+  stale track end must never trigger an auto-next: `/stop` and `/skip` clear the current track
+  _before_ stopping the transport.
 
 ## Audio / voice rules
 

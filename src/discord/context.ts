@@ -1,6 +1,6 @@
 import type { AppConfig } from '../config/env.js';
 import type { Logger } from '../logger.js';
-import type { VoiceSessionManager } from '../voice/session-manager.js';
+import type { PlayerService } from '../player/player-service.js';
 
 /**
  * Everything a command handler is allowed to reach for.
@@ -11,5 +11,5 @@ import type { VoiceSessionManager } from '../voice/session-manager.js';
 export interface CommandContext {
   readonly config: AppConfig;
   readonly logger: Logger;
-  readonly voice: VoiceSessionManager;
+  readonly players: PlayerService;
 }

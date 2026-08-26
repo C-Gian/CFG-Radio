@@ -5,6 +5,8 @@ import { attachHandlers, createClient } from './discord/client.js';
 import { createCommandRegistry } from './discord/command.js';
 import { commands } from './discord/commands/index.js';
 import { createLogger, formatForLog, registerSecret, type Logger } from './logger.js';
+import { PlayerService } from './player/player-service.js';
+import { resolveLocalTrack } from './audio/local-catalog.js';
 import { VoiceSessionManager } from './voice/session-manager.js';
 
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
@@ -27,9 +29,10 @@ async function main(): Promise<void> {
   const logger = createLogger(config.logLevel);
   const client = createClient();
   const voice = new VoiceSessionManager({ ffmpegPath: config.ffmpegPath, logger });
+  const players = new PlayerService({ voice, resolve: resolveLocalTrack, logger });
 
-  attachHandlers(client, createCommandRegistry(commands), { config, logger, voice });
-  installProcessHandlers({ client, voice, logger });
+  attachHandlers(client, createCommandRegistry(commands), { config, logger, players });
+  installProcessHandlers({ client, players, logger });
 
   logger.info('Starting CFG Radio...');
   logger.debug(
@@ -42,11 +45,11 @@ async function main(): Promise<void> {
 
 interface ShutdownTargets {
   readonly client: { destroy: () => Promise<void> };
-  readonly voice: { destroyAll: () => void };
+  readonly players: { destroyAll: () => void };
   readonly logger: Logger;
 }
 
-function installProcessHandlers({ client, voice, logger }: ShutdownTargets): void {
+function installProcessHandlers({ client, players, logger }: ShutdownTargets): void {
   let shuttingDown = false;
 
   const shutdown = (reason: string, exitCode: number): void => {
@@ -56,11 +59,11 @@ function installProcessHandlers({ client, voice, logger }: ShutdownTargets): voi
     shuttingDown = true;
     logger.info(`Received ${reason}, shutting down...`);
 
-    // Players and FFmpeg children first, then the gateway connection.
+    // Queues, players and FFmpeg children first, then the gateway connection.
     try {
-      voice.destroyAll();
+      players.destroyAll();
     } catch (error) {
-      logger.error(`Failed to close the voice sessions cleanly`, error);
+      logger.error('Failed to close the voice sessions cleanly', error);
     }
 
     client

@@ -4,7 +4,13 @@ import { generateDependencyReport } from '@discordjs/voice';
 import { getCiphers } from 'node:crypto';
 
 import { FfmpegPipeline, collectPipelineOutput, probeFfmpeg } from './audio/ffmpeg.js';
-import { TEST_TONE_PATH, assertTestToneExists } from './audio/test-tone.js';
+import {
+  ASSETS_DIR,
+  LOCAL_ASSETS,
+  assertAssetExists,
+  localAssetPath,
+  type LocalAsset,
+} from './audio/local-catalog.js';
 import { ffmpegPathFromEnv } from './config/env.js';
 import { createLogger } from './logger.js';
 
@@ -50,29 +56,40 @@ async function main(): Promise<void> {
     failures.push('This FFmpeg build has no libopus encoder');
   }
 
-  console.log('=== Test tone asset ===');
-  console.log(`  path: ${TEST_TONE_PATH}`);
-  try {
-    await assertTestToneExists();
-    console.log('  readable: yes');
-  } catch (error) {
-    console.log('  readable: NO');
-    failures.push(error instanceof Error ? error.message : String(error));
+  console.log('=== Local audio catalog ===');
+  console.log(`  directory: ${ASSETS_DIR}`);
+  const readable: LocalAsset[] = [];
+  for (const asset of LOCAL_ASSETS) {
+    try {
+      await assertAssetExists(localAssetPath(asset));
+      console.log(`  ${asset.fileName}: readable (${asset.durationMs / 1000}s)`);
+      readable.push(asset);
+    } catch (error) {
+      console.log(`  ${asset.fileName}: MISSING`);
+      failures.push(error instanceof Error ? error.message : String(error));
+    }
   }
 
   if (probe.available && failures.length === 0) {
     console.log('=== Playback pipeline (FFmpeg -> Ogg/Opus) ===');
-    const pipeline = FfmpegPipeline.start({ ffmpegPath, inputPath: TEST_TONE_PATH, logger });
-    try {
-      const output = await collectPipelineOutput(pipeline);
-      const isOgg = output.subarray(0, 4).toString('ascii') === OGG_MAGIC;
-      console.log(`  bytes produced: ${output.byteLength}`);
-      console.log(`  Ogg container: ${isOgg ? 'yes' : 'NO'}`);
-      if (output.byteLength === 0 || !isOgg) {
-        failures.push('The FFmpeg pipeline did not produce a valid Ogg/Opus stream');
+    for (const asset of readable) {
+      const pipeline = FfmpegPipeline.start({
+        ffmpegPath,
+        inputPath: localAssetPath(asset),
+        logger,
+      });
+      try {
+        const output = await collectPipelineOutput(pipeline);
+        const isOgg = output.subarray(0, 4).toString('ascii') === OGG_MAGIC;
+        console.log(
+          `  ${asset.fileName}: ${output.byteLength} bytes, Ogg: ${isOgg ? 'yes' : 'NO'}`,
+        );
+        if (output.byteLength === 0 || !isOgg) {
+          failures.push(`${asset.fileName} did not produce a valid Ogg/Opus stream`);
+        }
+      } finally {
+        pipeline.stop();
       }
-    } finally {
-      pipeline.stop();
     }
   }
 

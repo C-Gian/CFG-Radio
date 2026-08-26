@@ -1,4 +1,4 @@
-import type { ChatInputCommandInteraction, Guild } from 'discord.js';
+import type { ChatInputCommandInteraction } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -8,9 +8,29 @@ import {
 } from '../src/discord/command.js';
 import { commands } from '../src/discord/commands/index.js';
 import { disconnect } from '../src/discord/commands/disconnect.js';
+import { nowPlaying } from '../src/discord/commands/nowplaying.js';
+import { pause } from '../src/discord/commands/pause.js';
 import { ping } from '../src/discord/commands/ping.js';
 import { playLocal } from '../src/discord/commands/play-local.js';
-import { fakeContext } from './helpers/context.js';
+import { queue } from '../src/discord/commands/queue.js';
+import { resume } from '../src/discord/commands/resume.js';
+import { skip } from '../src/discord/commands/skip.js';
+import { stop } from '../src/discord/commands/stop.js';
+import { LOCAL_ASSETS } from '../src/audio/local-catalog.js';
+import { localTrack } from './helpers/fake-transport.js';
+import { contextWithPlayer, fakeChatInput, fakeContext, replyContent } from './helpers/context.js';
+
+const EXPECTED_COMMANDS = [
+  'disconnect',
+  'nowplaying',
+  'pause',
+  'ping',
+  'playlocal',
+  'queue',
+  'resume',
+  'skip',
+  'stop',
+];
 
 function fakeCommand(name: string): Command {
   return {
@@ -20,12 +40,18 @@ function fakeCommand(name: string): Command {
 }
 
 describe('command registry', () => {
-  it('ships /ping, /playlocal and /disconnect', () => {
+  it('ships every milestone 3 command', () => {
     const registry = createCommandRegistry(commands);
 
-    expect([...registry.keys()].sort()).toEqual(['disconnect', 'ping', 'playlocal']);
+    expect([...registry.keys()].sort()).toEqual(EXPECTED_COMMANDS);
     expect(registry.get('ping')).toBe(ping);
     expect(registry.get('playlocal')).toBe(playLocal);
+    expect(registry.get('pause')).toBe(pause);
+    expect(registry.get('resume')).toBe(resume);
+    expect(registry.get('skip')).toBe(skip);
+    expect(registry.get('stop')).toBe(stop);
+    expect(registry.get('queue')).toBe(queue);
+    expect(registry.get('nowplaying')).toBe(nowPlaying);
     expect(registry.get('disconnect')).toBe(disconnect);
   });
 
@@ -39,23 +65,21 @@ describe('command registry', () => {
     const payload = toApplicationCommands(commands);
 
     expect(payload).toHaveLength(commands.length);
-    expect(payload.map((command) => command.name).sort()).toEqual([
-      'disconnect',
-      'ping',
-      'playlocal',
-    ]);
+    expect(payload.map((command) => command.name).sort()).toEqual(EXPECTED_COMMANDS);
     expect(payload.every((command) => command.description.length > 0)).toBe(true);
+  });
+
+  it('offers one /playlocal choice per bundled asset', () => {
+    const json = playLocal.data.toJSON();
+    const option = json.options?.[0] as { choices?: { value: string }[] } | undefined;
+
+    expect(option?.choices?.map((choice) => choice.value)).toEqual(
+      LOCAL_ASSETS.map((asset) => asset.id),
+    );
   });
 });
 
 describe('/ping', () => {
-  it('is named "ping" and has a description', () => {
-    const json = ping.data.toJSON();
-
-    expect(json.name).toBe('ping');
-    expect(json.description).toBeTruthy();
-  });
-
   it('replies with Pong!', async () => {
     const reply = vi.fn().mockResolvedValue(undefined);
     const interaction = { reply } as unknown as ChatInputCommandInteraction;
@@ -63,65 +87,241 @@ describe('/ping', () => {
     await ping.execute(interaction, fakeContext().context);
 
     expect(reply).toHaveBeenCalledTimes(1);
-    expect(reply.mock.calls[0]?.[0]).toMatchObject({ content: 'Pong!' });
+    expect(replyContent(reply)).toBe('Pong!');
   });
 });
 
-/** Content of the Nth reply, without leaking `any` into the assertions. */
-function replyContent(reply: ReturnType<typeof vi.fn>, index = 0): string {
-  const payload = reply.mock.calls[index]?.[0] as { content?: string } | undefined;
-  return payload?.content ?? '';
-}
+describe('voice channel policy for mutating commands', () => {
+  it.each([
+    ['pause', pause],
+    ['resume', resume],
+    ['skip', skip],
+    ['stop', stop],
+    ['disconnect', disconnect],
+  ])('/%s refuses a user in another voice channel', async (_name, command) => {
+    const { context, player } = contextWithPlayer('guild-1', 'vc-1');
+    await player.enqueue(localTrack('a'));
+    const { interaction, reply } = fakeChatInput({ userChannelId: 'vc-2' });
 
-function fakeGuildInteraction(guildId: string | null) {
-  const reply = vi.fn().mockResolvedValue(undefined);
-  const interaction = {
-    reply,
-    guild: guildId === null ? null : ({ id: guildId } as unknown as Guild),
-  };
-  return { interaction: interaction as unknown as ChatInputCommandInteraction, reply };
-}
+    await command.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('in my voice channel');
+    expect(player.current).toBeDefined();
+  });
+
+  it.each([
+    ['pause', pause],
+    ['skip', skip],
+  ])('/%s refuses a user who is not in voice at all', async (_name, command) => {
+    const { context, player } = contextWithPlayer('guild-1', 'vc-1');
+    await player.enqueue(localTrack('a'));
+    const { interaction, reply } = fakeChatInput({ userChannelId: null });
+
+    await command.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Join a voice channel first');
+  });
+
+  it.each([
+    ['queue', queue],
+    ['nowplaying', nowPlaying],
+  ])('/%s is read-only and works from outside the voice channel', async (_name, command) => {
+    const { context, player } = contextWithPlayer('guild-1', 'vc-1');
+    await player.enqueue(localTrack('a'));
+    const { interaction, reply } = fakeChatInput({ userChannelId: null });
+
+    await command.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Track a');
+  });
+
+  it.each([
+    ['pause', pause],
+    ['resume', resume],
+    ['skip', skip],
+    ['stop', stop],
+    ['queue', queue],
+    ['nowplaying', nowPlaying],
+    ['disconnect', disconnect],
+  ])('/%s is guild only', async (_name, command) => {
+    const { context } = fakeContext();
+    const { interaction, reply } = fakeChatInput({ guildId: null });
+
+    await command.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('inside a server');
+  });
+});
+
+describe('/pause and /resume', () => {
+  it('pauses, refuses to pause twice, then resumes', async () => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+
+    const first = fakeChatInput();
+    await pause.execute(first.interaction, context);
+    expect(replyContent(first.reply)).toBe('Paused.');
+
+    const second = fakeChatInput();
+    await pause.execute(second.interaction, context);
+    expect(replyContent(second.reply)).toContain('already paused');
+
+    const third = fakeChatInput();
+    await resume.execute(third.interaction, context);
+    expect(replyContent(third.reply)).toBe('Resumed.');
+    expect(player.snapshot().status).toBe('playing');
+  });
+
+  it('answers cleanly when nothing is playing', async () => {
+    const { context } = contextWithPlayer();
+    const { interaction, reply } = fakeChatInput();
+
+    await pause.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Nothing is playing');
+  });
+
+  it('answers cleanly when the bot is not connected at all', async () => {
+    const { context } = fakeContext();
+    const { interaction, reply } = fakeChatInput();
+
+    await resume.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Nothing is playing');
+  });
+});
+
+describe('/skip', () => {
+  it('reports the next track', async () => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+    await player.enqueue(localTrack('b'));
+    const { interaction, reply } = fakeChatInput();
+
+    await skip.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Now playing **Track b**');
+    expect(player.current?.sourceId).toBe('b');
+  });
+
+  it('reports going idle when the queue is empty', async () => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+    const { interaction, reply } = fakeChatInput();
+
+    await skip.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('idle');
+    expect(player.current).toBeUndefined();
+  });
+
+  it('answers cleanly with nothing playing', async () => {
+    const { context } = contextWithPlayer();
+    const { interaction, reply } = fakeChatInput();
+
+    await skip.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Nothing is playing');
+  });
+});
+
+describe('/stop', () => {
+  it('stops playback, clears the queue and stays connected', async () => {
+    const { context, player, players } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+    await player.enqueue(localTrack('b'));
+    const { interaction, reply } = fakeChatInput();
+
+    await stop.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('still in the voice channel');
+    expect(player.snapshot()).toMatchObject({ status: 'idle', upcoming: [] });
+    expect(players.destroy).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent', async () => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+
+    const first = fakeChatInput();
+    await stop.execute(first.interaction, context);
+    const second = fakeChatInput();
+    await stop.execute(second.interaction, context);
+
+    expect(replyContent(second.reply)).toContain('Nothing to stop');
+  });
+
+  it('lets playback start again afterwards', async () => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+    const { interaction } = fakeChatInput();
+    await stop.execute(interaction, context);
+
+    const result = await player.enqueue(localTrack('b'));
+
+    expect(result.kind).toBe('started');
+  });
+});
+
+describe('/queue and /nowplaying', () => {
+  it('report an empty player', async () => {
+    const { context } = fakeContext();
+    const queueCall = fakeChatInput();
+    const nowCall = fakeChatInput();
+
+    await queue.execute(queueCall.interaction, context);
+    await nowPlaying.execute(nowCall.interaction, context);
+
+    expect(replyContent(queueCall.reply)).toContain('queue is empty');
+    expect(replyContent(nowCall.reply)).toContain('Nothing is playing');
+  });
+
+  it('list the current track and the upcoming ones', async () => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+    await player.enqueue(localTrack('b'));
+    await player.enqueue(localTrack('c'));
+    const { interaction, reply } = fakeChatInput();
+
+    await queue.execute(interaction, context);
+
+    const message = replyContent(reply);
+    expect(message).toContain('Track a');
+    expect(message).toMatch(/1\. \*\*Track b\*\*/);
+    expect(message).toMatch(/2\. \*\*Track c\*\*/);
+  });
+
+  it('shows the requester in /nowplaying', async () => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('a', 'user-42'));
+    const { interaction, reply } = fakeChatInput();
+
+    await nowPlaying.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('<@user-42>');
+  });
+});
 
 describe('/disconnect', () => {
   it('tears the guild session down and confirms', async () => {
-    const { context, voice } = fakeContext({ destroy: vi.fn().mockReturnValue(true) });
-    const { interaction, reply } = fakeGuildInteraction('guild-1');
+    const { context, player, players } = contextWithPlayer();
+    await player.enqueue(localTrack('a'));
+    const { interaction, reply } = fakeChatInput();
 
     await disconnect.execute(interaction, context);
 
-    expect(voice.destroy).toHaveBeenCalledWith('guild-1');
+    expect(players.destroy).toHaveBeenCalledWith('guild-1');
     expect(replyContent(reply)).toContain('left the voice channel');
+    expect(player.current).toBeUndefined();
   });
 
   it('answers politely when there is nothing to disconnect', async () => {
-    const { context, voice } = fakeContext({ destroy: vi.fn().mockReturnValue(false) });
-    const { interaction, reply } = fakeGuildInteraction('guild-1');
+    const { context, players } = fakeContext();
+    const { interaction, reply } = fakeChatInput();
 
     await disconnect.execute(interaction, context);
 
-    expect(voice.destroy).toHaveBeenCalledTimes(1);
+    expect(players.destroy).toHaveBeenCalledTimes(1);
     expect(replyContent(reply)).toContain('not connected');
-  });
-
-  it('is guild only', async () => {
-    const { context, voice } = fakeContext();
-    const { interaction, reply } = fakeGuildInteraction(null);
-
-    await disconnect.execute(interaction, context);
-
-    expect(voice.destroy).not.toHaveBeenCalled();
-    expect(replyContent(reply)).toContain('inside a server');
-  });
-
-  it('stays safe when run twice in a row', async () => {
-    const destroy = vi.fn().mockReturnValueOnce(true).mockReturnValueOnce(false);
-    const { context } = fakeContext({ destroy });
-    const { interaction, reply } = fakeGuildInteraction('guild-1');
-
-    await disconnect.execute(interaction, context);
-    await disconnect.execute(interaction, context);
-
-    expect(destroy).toHaveBeenCalledTimes(2);
-    expect(replyContent(reply, 1)).toContain('not connected');
   });
 });

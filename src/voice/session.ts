@@ -14,6 +14,7 @@ import {
 } from '@discordjs/voice';
 
 import { FfmpegPipeline } from '../audio/ffmpeg.js';
+import type { PlayableSource, PlaybackTransport } from '../player/transport.js';
 import type { Logger } from '../logger.js';
 
 /** How long the gateway handshake may take before we give up and clean up. */
@@ -38,12 +39,9 @@ export interface VoiceSessionOptions {
  *
  * Declaring it explicitly keeps their tests free of discord.js voice internals.
  */
-export interface VoiceSessionHandle {
+export interface VoiceSessionHandle extends PlaybackTransport {
   readonly guildId: string;
   readonly channelId: string | null;
-  readonly isPlaying: boolean;
-  play(filePath: string): Promise<void>;
-  stopPlayback(): void;
   destroy(): void;
 }
 
@@ -65,6 +63,10 @@ export class VoiceSession implements VoiceSessionHandle {
 
   private pipeline: FfmpegPipeline | undefined;
   private destroyed = false;
+  /** Set while we stop playback ourselves, so the Idle that follows is not a track end. */
+  private stoppingOnPurpose = false;
+  private trackEndListener: (() => void) | undefined;
+  private playbackErrorListener: ((error: unknown) => void) | undefined;
 
   private constructor(connection: VoiceConnection, options: VoiceSessionOptions) {
     this.guildId = options.guildId;
@@ -121,31 +123,34 @@ export class VoiceSession implements VoiceSessionHandle {
     return this.connection.joinConfig.channelId;
   }
 
-  get isPlaying(): boolean {
-    return (
-      this.player.state.status === AudioPlayerStatus.Playing ||
-      this.player.state.status === AudioPlayerStatus.Buffering
-    );
+  /** Registers the listener notified when a track ends on its own. */
+  onTrackEnd(listener: () => void): void {
+    this.trackEndListener = listener;
+  }
+
+  /** Registers the listener notified when playback breaks unexpectedly. */
+  onPlaybackError(listener: (error: unknown) => void): void {
+    this.playbackErrorListener = listener;
   }
 
   /**
-   * Plays a local file through a fresh FFmpeg pipeline.
+   * Plays a source through a fresh FFmpeg pipeline.
    *
    * Any previous playback is torn down first, and the call only resolves once
    * audio is actually flowing - a broken FFmpeg therefore surfaces as an error
    * the caller can report to the user.
    */
-  async play(filePath: string): Promise<void> {
+  async play(source: PlayableSource): Promise<void> {
     this.assertAlive();
     this.stopPlayback();
 
     const pipeline = FfmpegPipeline.start({
       ffmpegPath: this.ffmpegPath,
-      inputPath: filePath,
+      inputPath: source.input,
       logger: this.logger,
       onUnexpectedExit: (reason) => {
         this.logger.error(`Playback pipeline stopped unexpectedly: ${reason}`);
-        this.player.stop(true);
+        this.failPlayback(new Error(reason));
       },
     });
     this.pipeline = pipeline;
@@ -163,9 +168,28 @@ export class VoiceSession implements VoiceSessionHandle {
     }
   }
 
-  /** Stops the player and kills the current FFmpeg process. Idempotent. */
+  /** Pauses the audio player, keeping the FFmpeg pipeline alive. */
+  pause(): boolean {
+    return this.player.pause(true);
+  }
+
+  resume(): boolean {
+    return this.player.unpause();
+  }
+
+  /**
+   * Stops the player and kills the current FFmpeg process. Idempotent.
+   *
+   * The resulting `Idle` transition is flagged as deliberate, so the
+   * orchestration layer never mistakes a stop or a skip for a track that
+   * finished on its own.
+   */
   stopPlayback(): void {
-    this.player.stop(true);
+    if (this.player.state.status !== AudioPlayerStatus.Idle) {
+      this.stoppingOnPurpose = true;
+      this.player.stop(true);
+      this.stoppingOnPurpose = false;
+    }
     this.pipeline?.stop();
     this.pipeline = undefined;
   }
@@ -198,17 +222,32 @@ export class VoiceSession implements VoiceSessionHandle {
 
   private attachPlayerListeners(): void {
     this.player.on(AudioPlayerStatus.Idle, () => {
-      // End of track: release FFmpeg but keep the connection open so the user
-      // can still call /disconnect (no queue and no idle timer yet).
-      this.logger.debug(`Playback finished in guild ${this.guildId}`);
+      // Release FFmpeg but keep the connection open: the orchestration layer
+      // decides whether anything should play next.
+      const deliberate = this.stoppingOnPurpose;
       this.pipeline?.stop();
       this.pipeline = undefined;
+
+      if (deliberate || this.destroyed) {
+        return;
+      }
+      this.logger.debug(`Track ended in guild ${this.guildId}`);
+      this.trackEndListener?.();
     });
 
     this.player.on('error', (error) => {
       this.logger.error(`Audio player error in guild ${this.guildId}`, error);
-      this.stopPlayback();
+      this.failPlayback(error);
     });
+  }
+
+  /** Reports a playback failure once, after cleaning the pipeline up. */
+  private failPlayback(error: unknown): void {
+    if (this.destroyed) {
+      return;
+    }
+    this.stopPlayback();
+    this.playbackErrorListener?.(error);
   }
 
   private attachConnectionListeners(): void {

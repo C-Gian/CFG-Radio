@@ -1,11 +1,12 @@
 import { GuildPlayer } from './guild-player.js';
-import type { TrackResolver } from './transport.js';
+import type { PlaybackFallbackResolver, TrackResolver } from './transport.js';
 import type { Logger } from '../logger.js';
 import type { JoinRequest, VoiceSessionManager } from '../voice/session-manager.js';
 
 export interface PlayerServiceOptions {
   readonly voice: VoiceSessionManager;
   readonly resolve: TrackResolver;
+  readonly resolveFallback?: PlaybackFallbackResolver;
   readonly logger: Logger;
   readonly defaultVolume?: number;
   readonly idleDisconnectSeconds?: number;
@@ -22,6 +23,7 @@ export class PlayerService {
   private readonly players = new Map<string, GuildPlayer>();
   private readonly voice: VoiceSessionManager;
   private readonly resolve: TrackResolver;
+  private readonly resolveFallback: PlaybackFallbackResolver | undefined;
   private readonly logger: Logger;
   private readonly defaultVolume: number;
   private readonly idleDisconnectSeconds: number;
@@ -31,6 +33,7 @@ export class PlayerService {
   constructor(options: PlayerServiceOptions) {
     this.voice = options.voice;
     this.resolve = options.resolve;
+    this.resolveFallback = options.resolveFallback;
     this.logger = options.logger;
     this.defaultVolume = options.defaultVolume ?? 100;
     this.idleDisconnectSeconds = options.idleDisconnectSeconds ?? 300;
@@ -71,6 +74,7 @@ export class PlayerService {
       guildId: request.guildId,
       transport: session,
       resolve: this.resolve,
+      ...(this.resolveFallback === undefined ? {} : { resolveFallback: this.resolveFallback }),
       logger: this.logger,
       defaultVolume: this.defaultVolume,
       onIdleChange: (idle) => {

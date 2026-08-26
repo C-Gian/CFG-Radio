@@ -61,6 +61,7 @@ const STDERR_PATTERNS: readonly (readonly [RegExp, ProviderErrorCode])[] = [
     'unavailable',
   ],
   [/http error 404|does not exist|incomplete youtube id|video not found/i, 'not_found'],
+  [/drm protected|encrypted(?:-| )only/i, 'unsupported'],
   [/unsupported url|is not a valid url|no video formats found/i, 'unsupported'],
   [
     /unable to extract|failed to extract|requested format is not available|nsig|player response/i,

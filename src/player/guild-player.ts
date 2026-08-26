@@ -1,6 +1,12 @@
 import { TrackQueue } from './queue.js';
 import { describeTrack, type Track } from './track.js';
-import type { PlaybackTransport, TrackResolver } from './transport.js';
+import type {
+  PlaybackFallbackResolver,
+  PlaybackFailureStage,
+  PlaybackTransport,
+  PlayableSource,
+  TrackResolver,
+} from './transport.js';
 import type { Logger } from '../logger.js';
 
 /**
@@ -10,6 +16,13 @@ import type { Logger } from '../logger.js';
  * tracks stay queued and `/skip` can restart the chain.
  */
 export const MAX_CONSECUTIVE_FAILURES = 3;
+
+class PlaybackCancelledError extends Error {
+  constructor() {
+    super('Playback attempt was cancelled by a control operation');
+    this.name = 'PlaybackCancelledError';
+  }
+}
 
 export type PlayerStatus = 'idle' | 'playing' | 'paused';
 export type LoopMode = 'off' | 'track' | 'queue';
@@ -49,6 +62,7 @@ export interface GuildPlayerOptions {
   readonly guildId: string;
   readonly transport: PlaybackTransport;
   readonly resolve: TrackResolver;
+  readonly resolveFallback?: PlaybackFallbackResolver;
   readonly logger: Logger;
   readonly defaultVolume?: number;
   /** Reports transitions into and out of true voice-idle state. */
@@ -72,6 +86,7 @@ export class GuildPlayer {
   private readonly queue = new TrackQueue();
   private readonly transport: PlaybackTransport;
   private readonly resolve: TrackResolver;
+  private readonly resolveFallback: PlaybackFallbackResolver | undefined;
   private readonly logger: Logger;
   private readonly onIdleChange: ((idle: boolean) => void) | undefined;
 
@@ -81,6 +96,8 @@ export class GuildPlayer {
   private loopMode: LoopMode = 'off';
   /** Distinguishes repeated playbacks of the same logical Track in loop modes. */
   private playbackGeneration = 0;
+  /** Invalidates a source that is still resolving/starting when a control arrives. */
+  private playbackAttemptEpoch = 0;
   private destroyed = false;
   private operationInProgress = false;
   private lastReportedIdle: boolean | undefined;
@@ -90,6 +107,7 @@ export class GuildPlayer {
     this.guildId = options.guildId;
     this.transport = options.transport;
     this.resolve = options.resolve;
+    this.resolveFallback = options.resolveFallback;
     this.logger = options.logger;
     this.onIdleChange = options.onIdleChange;
     this.volume = options.defaultVolume ?? 100;
@@ -290,6 +308,7 @@ export class GuildPlayer {
    * cleared first, so a late end event is recognised as stale.
    */
   skip(): Promise<SkipResult> {
+    this.playbackAttemptEpoch += 1;
     return this.serialize(async () => {
       const skipped = this.currentTrack;
       this.currentTrack = undefined;
@@ -311,6 +330,7 @@ export class GuildPlayer {
    * @returns `true` when there was something to stop.
    */
   stop(): Promise<boolean> {
+    this.playbackAttemptEpoch += 1;
     return this.serialize(() => {
       const hadSomething =
         this.currentTrack !== undefined || !this.queue.isEmpty || this.loopMode !== 'off';
@@ -338,6 +358,7 @@ export class GuildPlayer {
       return;
     }
     this.destroyed = true;
+    this.playbackAttemptEpoch += 1;
     this.currentTrack = undefined;
     this.status = 'idle';
     this.queue.clear();
@@ -438,6 +459,9 @@ export class GuildPlayer {
     if (error === undefined) {
       return;
     }
+    if (error instanceof PlaybackCancelledError) {
+      return;
+    }
 
     if (attempt + 1 >= MAX_CONSECUTIVE_FAILURES) {
       this.logger.warn(
@@ -455,34 +479,83 @@ export class GuildPlayer {
    * @returns `undefined` on success, or the error that prevented playback.
    */
   private async startTrack(track: Track): Promise<unknown> {
+    const attemptEpoch = this.playbackAttemptEpoch;
+    let source: PlayableSource;
     try {
-      const source = await this.resolve(track);
-      if (this.isDestroyed()) {
-        return new Error('The player was destroyed while resolving the track');
-      }
-      await this.transport.play(source);
-      if (this.isDestroyed()) {
-        this.transport.stopPlayback();
-        return new Error('The player was destroyed while starting the track');
-      }
-      this.currentTrack = track;
-      this.playbackGeneration += 1;
-      this.status = 'playing';
-      this.logger.info(`Started ${describeTrack(track)} in guild ${this.guildId}`);
-      return undefined;
+      source = await this.resolve(track);
     } catch (error) {
-      this.logger.error(`Could not play ${describeTrack(track)} in guild ${this.guildId}`, error);
-      // Leave nothing half-started behind. The slot is cleared first so a late
-      // end event from the transport is recognised as stale.
-      this.currentTrack = undefined;
-      this.status = 'idle';
-      this.transport.stopPlayback();
-      return error;
+      return this.tryFallback(track, 'resolution', error, attemptEpoch);
     }
+
+    if (!this.isAttemptCurrent(attemptEpoch)) {
+      return this.failStart(track, new PlaybackCancelledError());
+    }
+
+    try {
+      await this.transport.play(source);
+    } catch (error) {
+      this.transport.stopPlayback();
+      return this.tryFallback(track, 'start', error, attemptEpoch);
+    }
+    return this.finishStart(track, attemptEpoch);
   }
 
-  private isDestroyed(): boolean {
-    return this.destroyed;
+  private async tryFallback(
+    track: Track,
+    stage: PlaybackFailureStage,
+    primaryError: unknown,
+    attemptEpoch: number,
+  ): Promise<unknown> {
+    if (this.resolveFallback === undefined || !this.isAttemptCurrent(attemptEpoch)) {
+      return this.failStart(track, primaryError);
+    }
+
+    let fallbackSource: PlayableSource | undefined;
+    try {
+      fallbackSource = await this.resolveFallback({ track, stage, error: primaryError });
+    } catch (error) {
+      this.logger.warn(`Playback fallback evaluation failed for ${describeTrack(track)}`, error);
+      return this.failStart(track, primaryError);
+    }
+    if (!this.isAttemptCurrent(attemptEpoch)) {
+      return this.failStart(track, new PlaybackCancelledError());
+    }
+    if (fallbackSource === undefined) {
+      return this.failStart(track, primaryError);
+    }
+
+    try {
+      await this.transport.play(fallbackSource);
+    } catch (error) {
+      this.transport.stopPlayback();
+      this.logger.error(`Fallback could not start for ${describeTrack(track)}`, error);
+      return this.failStart(track, primaryError);
+    }
+    return this.finishStart(track, attemptEpoch);
+  }
+
+  private finishStart(track: Track, attemptEpoch: number): unknown {
+    if (!this.isAttemptCurrent(attemptEpoch)) {
+      this.transport.stopPlayback();
+      return this.failStart(track, new PlaybackCancelledError());
+    }
+    this.currentTrack = track;
+    this.playbackGeneration += 1;
+    this.status = 'playing';
+    this.logger.info(`Started ${describeTrack(track)} in guild ${this.guildId}`);
+    return undefined;
+  }
+
+  private failStart(track: Track, error: unknown): unknown {
+    this.logger.error(`Could not play ${describeTrack(track)} in guild ${this.guildId}`, error);
+    this.currentTrack = undefined;
+    this.status = 'idle';
+    this.transport.stopPlayback();
+    return error;
+  }
+
+  private isAttemptCurrent(attemptEpoch: number): boolean {
+    return !this.destroyed && this.playbackAttemptEpoch === attemptEpoch;
   }
 
   private reportIdleChange(): void {

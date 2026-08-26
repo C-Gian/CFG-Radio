@@ -11,6 +11,7 @@ import { VoiceSessionManager } from './voice/session-manager.js';
 import { createYouTubeMetadataProvider } from './youtube/metadata.js';
 import { createYouTubePlaylistProvider } from './youtube/playlist.js';
 import { YtDlpRunner } from './youtube/ytdlp.js';
+import { createSoundCloudFallbackResolver } from './soundcloud/fallback.js';
 
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
@@ -36,6 +37,7 @@ async function main(): Promise<void> {
   const players = new PlayerService({
     voice,
     resolve: createTrackResolver({ ytdlp }),
+    resolveFallback: createSoundCloudFallbackResolver({ ytdlp, logger }),
     logger,
     defaultVolume: config.defaultVolume,
     idleDisconnectSeconds: config.idleDisconnectSeconds,

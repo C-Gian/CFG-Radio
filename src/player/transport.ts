@@ -22,6 +22,23 @@ export interface PlayableSource {
 /** Turns the logical identity of a track into something playable. */
 export type TrackResolver = (track: Track) => Promise<PlayableSource> | PlayableSource;
 
+/** Where the primary playback attempt failed before a track became current. */
+export type PlaybackFailureStage = 'resolution' | 'start';
+
+export interface PlaybackFallbackRequest {
+  readonly track: Track;
+  readonly stage: PlaybackFailureStage;
+  readonly error: unknown;
+}
+
+/**
+ * Optionally resolves one alternative runtime source for a failed attempt.
+ * Returning `undefined` means the original failure should stand.
+ */
+export type PlaybackFallbackResolver = (
+  request: PlaybackFallbackRequest,
+) => Promise<PlayableSource | undefined> | PlayableSource | undefined;
+
 /**
  * The playback surface the orchestration layer depends on.
  *

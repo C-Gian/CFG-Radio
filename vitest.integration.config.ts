@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Integration suite: really spawns yt-dlp and talks to YouTube.
+ * Integration suite: really spawns yt-dlp and talks to external providers.
  *
  * Kept out of `npm test` on purpose - an upstream outage must never turn the
  * normal suite red. Run it with `npm run test:integration`.

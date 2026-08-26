@@ -141,6 +141,35 @@ Layering, from the command down: **handler → GuildPlayer → TrackResolver →
   refuses, classify the failure and fail cleanly.
 - Never download media to disk: FFmpeg streams the resolved URL.
 
+## Cancellation and retries
+
+- Every playback attempt owns an `AbortController`. `/skip`, `/stop`, `/disconnect`,
+  `destroy()` and shutdown abort it, which kills the yt-dlp child immediately instead of
+  waiting for its 30s timeout. The attempt epoch stays as the second line of defence
+  against a late result; the signal stops the work that produces it.
+- The signal belongs to **one attempt in one guild**. Never share a controller between
+  guilds, tracks or the whole process.
+- A command that was cancelled before its body reached the serialisation chain must not
+  start anything: both `enqueue` and `enqueueMany` compare the epoch they were scheduled
+  with against the current one.
+- A deliberate cancellation is `ProviderError` code `cancelled`. It is never reported as a
+  timeout or an extractor fault, and never triggers a SoundCloud fallback.
+- **Retry policy: no automatic retries**, with exactly one exception. A source that was
+  already resolved when the command ran (the immediate-start optimisation) may have gone
+  stale, so a pre-start failure on such a source earns exactly one fresh resolution. Every
+  other failure - `unavailable`, `login_required`, `geo_restricted`, `unsupported`,
+  `rate_limited`, `timeout`, `extractor_failed`, a low-confidence fallback, or any
+  post-start death - is reported and the queue moves on. Retrying those wastes time, risks
+  duplicate audio or makes rate limiting worse.
+
+## Logging rules
+
+- `redactUrls()` strips the query string of every URL before it reaches a log line: signed
+  googlevideo and SoundCloud CDN links carry their signature there, and FFmpeg prints them
+  verbatim on a 403. Host and path survive so failures stay debuggable.
+- Never log a direct media URL, a cookie, an authorization header or a token. The token is
+  additionally scrubbed through `registerSecret()`.
+
 ## Audio / voice rules
 
 - FFmpeg is a **system dependency**, spawned as a controlled child process. Do not

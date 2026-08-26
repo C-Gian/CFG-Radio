@@ -24,7 +24,8 @@
     "diagnostics:voice": "tsx src/diagnostics-voice.ts",
     "diagnostics:ytdlp": "tsx src/diagnostics-ytdlp.ts",
     "diagnostics:soundcloud": "tsx src/diagnostics-soundcloud.ts",
-    "diagnostics:fallback": "tsx src/diagnostics-fallback.ts"
+    "diagnostics:fallback": "tsx src/diagnostics-fallback.ts",
+    "diagnostics:hardening": "tsx src/diagnostics-hardening.ts"
   },
   "dependencies": {
     "@discordjs/voice": "^0.19.2",

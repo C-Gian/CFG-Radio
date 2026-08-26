@@ -3,7 +3,8 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
   {
-    ignores: ['dist/**', 'coverage/**', 'node_modules/**'],
+    // Plain Node helper spawned by the diagnostics; not part of the TS project.
+    ignores: ['dist/**', 'coverage/**', 'node_modules/**', 'tools/*.mjs'],
   },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,

@@ -2,7 +2,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import type { EventEmitter } from 'node:events';
 import type { Readable } from 'node:stream';
 
-import { ProviderError, type ProviderErrorCode } from '../player/provider-error.js';
+import { ProviderError, cancelledError, type ProviderErrorCode } from '../player/provider-error.js';
 import type { Logger } from '../logger.js';
 
 /** Nothing in the application spawns yt-dlp except this module. */
@@ -45,6 +45,14 @@ export interface YtDlpRunnerOptions {
 export interface YtDlpResult {
   readonly stdout: string;
   readonly stderr: string;
+}
+
+export interface YtDlpRunOptions {
+  /**
+   * Cancels this extraction. The child is killed as soon as it aborts, so a
+   * /skip never waits for the 30s timeout of an extractor that hangs.
+   */
+  readonly signal?: AbortSignal;
 }
 
 /**
@@ -115,9 +123,13 @@ export class YtDlpRunner {
    *
    * @throws {ProviderError} classified from the exit code and stderr.
    */
-  run(args: readonly string[]): Promise<YtDlpResult> {
+  run(args: readonly string[], options: YtDlpRunOptions = {}): Promise<YtDlpResult> {
     if (this.destroyed) {
       return Promise.reject(new ProviderError('unknown', 'yt-dlp runner is shutting down'));
+    }
+    // Nothing is spawned for an attempt that is already gone.
+    if (options.signal?.aborted === true) {
+      return Promise.reject(cancelledError('The yt-dlp extraction'));
     }
     return new Promise<YtDlpResult>((resolve, reject) => {
       let child: YtDlpChild;
@@ -136,6 +148,9 @@ export class YtDlpRunner {
       let stderr = '';
       let settled = false;
       let abort = (): void => undefined;
+      const onAbort = (): void => {
+        abort();
+      };
 
       const finish = (outcome: () => void): void => {
         if (settled) {
@@ -144,6 +159,7 @@ export class YtDlpRunner {
         settled = true;
         clearTimeout(timer);
         this.activeRuns.delete(abort);
+        options.signal?.removeEventListener('abort', onAbort);
         outcome();
       };
 
@@ -171,10 +187,13 @@ export class YtDlpRunner {
       abort = (): void => {
         finish(() => {
           kill();
-          reject(new ProviderError('unknown', 'yt-dlp was stopped during shutdown'));
+          reject(cancelledError('The yt-dlp extraction'));
         });
       };
       this.activeRuns.add(abort);
+      // Late listeners are safe: finish() is exactly-once, so an abort that
+      // races the timeout or the close event simply loses.
+      options.signal?.addEventListener('abort', onAbort, { once: true });
 
       child.stdout?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => {
@@ -245,8 +264,8 @@ export class YtDlpRunner {
    *
    * @throws {ProviderError} `extractor_failed` when the output is not usable.
    */
-  async json(args: readonly string[]): Promise<unknown> {
-    const { stdout } = await this.run(args);
+  async json(args: readonly string[], options: YtDlpRunOptions = {}): Promise<unknown> {
+    const { stdout } = await this.run(args, options);
     const trimmed = stdout.trim();
 
     if (trimmed === '') {

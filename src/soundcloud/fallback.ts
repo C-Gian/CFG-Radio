@@ -1,4 +1,4 @@
-import { isProviderError } from '../player/provider-error.js';
+import { isCancelledError, isProviderError } from '../player/provider-error.js';
 import type { PlaybackFallbackRequest, PlaybackFallbackResolver } from '../player/transport.js';
 import type { Logger } from '../logger.js';
 import type { YtDlpRunner } from '../youtube/ytdlp.js';
@@ -43,6 +43,10 @@ export function createSoundCloudFallbackResolver(
       return undefined;
     }
 
+    if (request.signal.aborted) {
+      return undefined;
+    }
+
     const { track } = request;
     options.logger.info(
       `YouTube playback failed at ${request.stage} in ${track.sourceId}; evaluating SoundCloud fallback`,
@@ -54,8 +58,13 @@ export function createSoundCloudFallbackResolver(
         options.ytdlp,
         buildSoundCloudSearchQuery(track),
         limit,
+        { signal: request.signal },
       );
     } catch (error) {
+      if (isCancelledError(error)) {
+        options.logger.debug(`SoundCloud fallback search cancelled for ${track.sourceId}`);
+        return undefined;
+      }
       options.logger.warn(`SoundCloud fallback search failed for YouTube ${track.sourceId}`, error);
       return undefined;
     }
@@ -84,7 +93,9 @@ export function createSoundCloudFallbackResolver(
         `${decision.selected.id}, score ${decision.score.finalScore}`,
     );
     try {
-      return await resolveSoundCloudPlayback(options.ytdlp, decision.selected);
+      return await resolveSoundCloudPlayback(options.ytdlp, decision.selected, {
+        signal: request.signal,
+      });
     } catch (error) {
       // M7 tries exactly one winning candidate and never falls through to a
       // second result or a new search.

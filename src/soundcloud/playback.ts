@@ -1,7 +1,7 @@
 import { parsePlayableSource } from '../audio/playable-source.js';
 import { ProviderError } from '../player/provider-error.js';
 import type { PlayableSource } from '../player/transport.js';
-import type { YtDlpRunner } from '../youtube/ytdlp.js';
+import type { YtDlpRunOptions, YtDlpRunner } from '../youtube/ytdlp.js';
 import type { SoundCloudCandidate } from './candidate.js';
 
 /** FFmpeg accepts both the HTTP and HLS audio variants exposed by SoundCloud. */
@@ -53,8 +53,9 @@ export function parseSoundCloudPlayableSource(
 export async function resolveSoundCloudPlayback(
   runner: YtDlpRunner,
   candidate: SoundCloudCandidate,
+  options: YtDlpRunOptions = {},
 ): Promise<PlayableSource> {
-  const payload = await runner.json(soundCloudPlaybackArgs(candidate.canonicalUrl));
+  const payload = await runner.json(soundCloudPlaybackArgs(candidate.canonicalUrl), options);
   return parseSoundCloudPlayableSource(payload, candidate);
 }
 

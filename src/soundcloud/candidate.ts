@@ -1,5 +1,5 @@
 import { ProviderError } from '../player/provider-error.js';
-import type { YtDlpRunner } from '../youtube/ytdlp.js';
+import type { YtDlpRunOptions, YtDlpRunner } from '../youtube/ytdlp.js';
 
 export const DEFAULT_SOUNDCLOUD_SEARCH_LIMIT = 5;
 export const MAX_SOUNDCLOUD_SEARCH_LIMIT = 10;
@@ -61,8 +61,9 @@ export async function searchSoundCloudCandidates(
   runner: YtDlpRunner,
   query: string,
   limit = DEFAULT_SOUNDCLOUD_SEARCH_LIMIT,
+  options: YtDlpRunOptions = {},
 ): Promise<SoundCloudCandidate[]> {
-  const payload = await runner.json(soundCloudSearchArgs(query, limit));
+  const payload = await runner.json(soundCloudSearchArgs(query, limit), options);
   return parseSoundCloudCandidates(payload);
 }
 

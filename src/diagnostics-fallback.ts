@@ -28,7 +28,12 @@ async function main(): Promise<void> {
       requestedByUserId: 'diagnostic',
     });
     const simulatedFailure = new ProviderError('unavailable', 'simulated primary failure');
-    const request = { track, stage: 'resolution' as const, error: simulatedFailure };
+    const request = {
+      track,
+      stage: 'resolution' as const,
+      error: simulatedFailure,
+      signal: new AbortController().signal,
+    };
 
     console.log('=== Simulated primary attempt ===');
     console.log(`  original: ${track.title}`);

@@ -2,7 +2,7 @@ import type { Track } from '../player/track.js';
 import type { PlayableSource } from '../player/transport.js';
 import { parsePlayableSource } from '../audio/playable-source.js';
 import { canonicalWatchUrl } from './url.js';
-import { JS_RUNTIME_ARGS, type YtDlpRunner } from './ytdlp.js';
+import { JS_RUNTIME_ARGS, type YtDlpRunOptions, type YtDlpRunner } from './ytdlp.js';
 
 /**
  * Audio-only first, anything else as a last resort. FFmpeg re-encodes to
@@ -33,8 +33,9 @@ export { parsePlayableSource } from '../audio/playable-source.js';
 export async function resolveYouTubePlayback(
   runner: YtDlpRunner,
   track: Track,
+  options: YtDlpRunOptions = {},
 ): Promise<PlayableSource> {
   const videoUrl = track.canonicalUrl ?? canonicalWatchUrl(track.sourceId);
-  const payload = await runner.json(playbackArgs(videoUrl));
+  const payload = await runner.json(playbackArgs(videoUrl), options);
   return parsePlayableSource(payload);
 }

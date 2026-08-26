@@ -16,6 +16,9 @@ const PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
   extractor_failed: 'I could not read that video. It may be restricted or unsupported.',
   timeout: 'YouTube took too long to respond.',
   unsupported: 'That URL is not a supported YouTube video.',
+  // Whatever cancelled the attempt (/skip, /stop, /disconnect) already gave
+  // the user the right answer; this is only a safety net.
+  cancelled: 'That request was cancelled.',
   unknown: 'Something went wrong while loading that video.',
 };
 
@@ -28,6 +31,7 @@ const PLAYLIST_PROVIDER_MESSAGES: Record<ProviderErrorCode, string> = {
   extractor_failed: 'I could not read that playlist. It may be restricted or unsupported.',
   timeout: 'YouTube took too long to respond.',
   unsupported: 'That URL is not a supported YouTube playlist.',
+  cancelled: 'That request was cancelled.',
   unknown: 'Something went wrong while loading that playlist.',
 };
 

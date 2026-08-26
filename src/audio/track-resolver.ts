@@ -1,6 +1,6 @@
 import { resolveLocalTrack } from './local-catalog.js';
 import type { Track } from '../player/track.js';
-import type { PlayableSource, TrackResolver } from '../player/transport.js';
+import type { PlaybackAttemptContext, PlayableSource, TrackResolver } from '../player/transport.js';
 import { resolveYouTubePlayback } from '../youtube/playback.js';
 import type { YtDlpRunner } from '../youtube/ytdlp.js';
 
@@ -16,12 +16,12 @@ export interface TrackResolverOptions {
  * exhaustive on purpose: adding a source makes the compiler point here.
  */
 export function createTrackResolver(options: TrackResolverOptions): TrackResolver {
-  return (track: Track): Promise<PlayableSource> => {
+  return (track: Track, context: PlaybackAttemptContext): Promise<PlayableSource> => {
     switch (track.source) {
       case 'local':
         return resolveLocalTrack(track);
       case 'youtube':
-        return resolveYouTubePlayback(options.ytdlp, track);
+        return resolveYouTubePlayback(options.ytdlp, track, { signal: context.signal });
     }
   };
 }

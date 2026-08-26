@@ -33,6 +33,7 @@ export class PlayerService {
   private readonly pendingJoins = new Map<string, Promise<GuildPlayer>>();
   /** Bumped by every teardown, so a join that lost the race cannot install itself. */
   private readonly joinEpochs = new Map<string, number>();
+  private shuttingDown = false;
 
   constructor(options: PlayerServiceOptions) {
     this.voice = options.voice;
@@ -68,6 +69,12 @@ export class PlayerService {
    * Never moves an existing connection: the caller applies that policy first.
    */
   async join(request: JoinRequest): Promise<GuildPlayer> {
+    if (this.shuttingDown) {
+      // An interaction that arrived while the process is going down must not
+      // open a fresh voice connection behind the teardown.
+      throw new Error('CFG Radio is shutting down');
+    }
+
     const existing = this.players.get(request.guildId);
     if (existing !== undefined) {
       return existing;
@@ -135,6 +142,7 @@ export class PlayerService {
 
   /** Tears every guild down. Used by the graceful shutdown path. */
   destroyAll(): void {
+    this.shuttingDown = true;
     // Pending joins included: a handshake that finishes after shutdown must
     // not resurrect a guild.
     for (const guildId of new Set([...this.players.keys(), ...this.pendingJoins.keys()])) {

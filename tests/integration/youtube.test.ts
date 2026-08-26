@@ -93,7 +93,7 @@ describe('YouTube playback resolution (live)', () => {
       canonicalUrl: classified.canonicalUrl,
     });
 
-    const source = await resolve(track);
+    const source = await resolve(track, { signal: new AbortController().signal });
     expect(source.kind).toBe('url');
     expect(source.input).toMatch(/^https:\/\//);
 
@@ -173,7 +173,7 @@ describe('YouTube playlist metadata and first playback (live)', () => {
       throw new Error('the playlist unexpectedly has no first track');
     }
 
-    const source = await resolve(first);
+    const source = await resolve(first, { signal: new AbortController().signal });
     expect(jsonSpy).toHaveBeenCalledTimes(2);
     jsonSpy.mockRestore();
     expect(source.kind).toBe('url');

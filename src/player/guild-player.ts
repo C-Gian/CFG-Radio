@@ -7,6 +7,7 @@ import type {
   PlayableSource,
   TrackResolver,
 } from './transport.js';
+import { isCancelledError } from './provider-error.js';
 import type { Logger } from '../logger.js';
 
 /**
@@ -24,6 +25,11 @@ export const MAX_CONSECUTIVE_FAILURES = 3;
  * waited behind an unusually long operation.
  */
 export const IMMEDIATE_SOURCE_MAX_AGE_MS = 60_000;
+
+interface PlaybackAttempt {
+  readonly epoch: number;
+  readonly controller: AbortController;
+}
 
 class PlaybackCancelledError extends Error {
   constructor() {
@@ -106,6 +112,8 @@ export class GuildPlayer {
   private playbackGeneration = 0;
   /** Invalidates a source that is still resolving/starting when a control arrives. */
   private playbackAttemptEpoch = 0;
+  /** Aborts the provider work of the attempt that is currently starting. */
+  private activeAttempt: AbortController | undefined;
   private destroyed = false;
   private operationInProgress = false;
   private lastReportedIdle: boolean | undefined;
@@ -180,9 +188,15 @@ export class GuildPlayer {
    */
   enqueue(track: Track, immediateSource?: PlayableSource): Promise<EnqueueResult> {
     const offeredAt = Date.now();
+    const scheduledEpoch = this.playbackAttemptEpoch;
     return this.serialize(async () => {
       if (this.destroyed) {
         return { kind: 'failed', track, error: new Error('The player is shutting down') };
+      }
+      if (this.playbackAttemptEpoch !== scheduledEpoch) {
+        // A control operation cancelled everything that was pending when this
+        // command was issued, before this body ever got the chain.
+        return { kind: 'failed', track, error: new PlaybackCancelledError() };
       }
 
       if (this.status === 'idle' && this.currentTrack === undefined && this.queue.isEmpty) {
@@ -213,7 +227,11 @@ export class GuildPlayer {
    */
   enqueueMany(tracks: readonly Track[]): Promise<EnqueueManyResult> {
     const batch = [...tracks];
+    const scheduledEpoch = this.playbackAttemptEpoch;
     return this.serialize(async () => {
+      if (this.playbackAttemptEpoch !== scheduledEpoch) {
+        return { kind: 'failed', tracks: batch, error: new PlaybackCancelledError() };
+      }
       if (this.destroyed || batch.length === 0) {
         return {
           kind: 'failed',
@@ -323,7 +341,7 @@ export class GuildPlayer {
    * cleared first, so a late end event is recognised as stale.
    */
   skip(): Promise<SkipResult> {
-    this.playbackAttemptEpoch += 1;
+    this.cancelActiveAttempt();
     return this.serialize(async () => {
       const skipped = this.currentTrack;
       this.currentTrack = undefined;
@@ -345,7 +363,7 @@ export class GuildPlayer {
    * @returns `true` when there was something to stop.
    */
   stop(): Promise<boolean> {
-    this.playbackAttemptEpoch += 1;
+    this.cancelActiveAttempt();
     return this.serialize(() => {
       const hadSomething =
         this.currentTrack !== undefined || !this.queue.isEmpty || this.loopMode !== 'off';
@@ -373,13 +391,42 @@ export class GuildPlayer {
       return;
     }
     this.destroyed = true;
-    this.playbackAttemptEpoch += 1;
+    this.cancelActiveAttempt();
     this.currentTrack = undefined;
     this.status = 'idle';
     this.queue.clear();
     this.loopMode = 'off';
     this.transport.stopPlayback();
     this.logger.debug(`Player destroyed in guild ${this.guildId}`);
+  }
+
+  /**
+   * Invalidates the attempt that is starting right now.
+   *
+   * Bumping the epoch keeps a late result from being used; aborting the
+   * controller stops the work that produces it, so a hung extractor cannot
+   * keep /skip, /stop or /disconnect waiting for its timeout.
+   */
+  private cancelActiveAttempt(): void {
+    this.playbackAttemptEpoch += 1;
+    const attempt = this.activeAttempt;
+    this.activeAttempt = undefined;
+    attempt?.abort();
+  }
+
+  private beginAttempt(): PlaybackAttempt {
+    // Defensive: a previous controller can only survive a bug, never a
+    // normal flow, but it must not outlive its attempt either way.
+    this.activeAttempt?.abort();
+    const controller = new AbortController();
+    this.activeAttempt = controller;
+    return { epoch: this.playbackAttemptEpoch, controller };
+  }
+
+  private endAttempt(controller: AbortController): void {
+    if (this.activeAttempt === controller) {
+      this.activeAttempt = undefined;
+    }
   }
 
   /** Runs `operation` after every previously scheduled one. */
@@ -497,19 +544,34 @@ export class GuildPlayer {
    * @returns `undefined` on success, or the error that prevented playback.
    */
   private async startTrack(track: Track, immediateSource?: PlayableSource): Promise<unknown> {
-    const attemptEpoch = this.playbackAttemptEpoch;
+    const attempt = this.beginAttempt();
+    try {
+      return await this.runAttempt(track, attempt, immediateSource);
+    } finally {
+      this.endAttempt(attempt.controller);
+    }
+  }
+
+  private async runAttempt(
+    track: Track,
+    attempt: PlaybackAttempt,
+    immediateSource?: PlayableSource,
+  ): Promise<unknown> {
+    const { epoch, controller } = attempt;
+    const context = { signal: controller.signal };
     let source: PlayableSource;
+
     if (immediateSource !== undefined) {
       source = immediateSource;
     } else {
       try {
-        source = await this.resolve(track);
+        source = await this.resolve(track, context);
       } catch (error) {
-        return this.tryFallback(track, 'resolution', error, attemptEpoch);
+        return this.tryFallback(track, 'resolution', error, attempt);
       }
     }
 
-    if (!this.isAttemptCurrent(attemptEpoch)) {
+    if (!this.isAttemptCurrent(epoch)) {
       return this.failStart(track, new PlaybackCancelledError());
     }
 
@@ -517,29 +579,50 @@ export class GuildPlayer {
       await this.transport.play(source);
     } catch (error) {
       this.transport.stopPlayback();
-      return this.tryFallback(track, 'start', error, attemptEpoch);
+
+      // A source that was already resolved when the command ran can have gone
+      // stale in the meantime. That is a transient, pre-start failure and the
+      // replay has not begun, so exactly one fresh resolution is worth trying
+      // before falling back or giving up. Every other failure is not retried.
+      if (immediateSource !== undefined && this.isAttemptCurrent(epoch)) {
+        this.logger.warn(
+          `Pre-resolved source failed for ${describeTrack(track)}; retrying once with a fresh one`,
+        );
+        return this.runAttempt(track, attempt);
+      }
+      return this.tryFallback(track, 'start', error, attempt);
     }
-    return this.finishStart(track, attemptEpoch);
+    return this.finishStart(track, epoch);
   }
 
   private async tryFallback(
     track: Track,
     stage: PlaybackFailureStage,
     primaryError: unknown,
-    attemptEpoch: number,
+    attempt: PlaybackAttempt,
   ): Promise<unknown> {
-    if (this.resolveFallback === undefined || !this.isAttemptCurrent(attemptEpoch)) {
+    const { epoch, controller } = attempt;
+    // A cancelled attempt has nothing left to rescue.
+    if (isCancelledError(primaryError)) {
+      return this.failStart(track, new PlaybackCancelledError());
+    }
+    if (this.resolveFallback === undefined || !this.isAttemptCurrent(epoch)) {
       return this.failStart(track, primaryError);
     }
 
     let fallbackSource: PlayableSource | undefined;
     try {
-      fallbackSource = await this.resolveFallback({ track, stage, error: primaryError });
+      fallbackSource = await this.resolveFallback({
+        track,
+        stage,
+        error: primaryError,
+        signal: controller.signal,
+      });
     } catch (error) {
       this.logger.warn(`Playback fallback evaluation failed for ${describeTrack(track)}`, error);
       return this.failStart(track, primaryError);
     }
-    if (!this.isAttemptCurrent(attemptEpoch)) {
+    if (!this.isAttemptCurrent(epoch)) {
       return this.failStart(track, new PlaybackCancelledError());
     }
     if (fallbackSource === undefined) {
@@ -553,7 +636,7 @@ export class GuildPlayer {
       this.logger.error(`Fallback could not start for ${describeTrack(track)}`, error);
       return this.failStart(track, primaryError);
     }
-    return this.finishStart(track, attemptEpoch);
+    return this.finishStart(track, epoch);
   }
 
   private finishStart(track: Track, attemptEpoch: number): unknown {

@@ -15,6 +15,14 @@ import { createSoundCloudFallbackResolver } from './soundcloud/fallback.js';
 
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
+/**
+ * How long the ordinary teardown may take before the process leaves anyway.
+ *
+ * Cleanup is always the main path; this only stops a wedged library from
+ * keeping the bot alive forever after the operator asked it to stop.
+ */
+const SHUTDOWN_DEADLINE_MS = 10_000;
+
 function fail(error: unknown): never {
   if (error instanceof ConfigError) {
     // Printed with console on purpose: the logger may not exist yet.
@@ -75,9 +83,20 @@ function installProcessHandlers({ client, players, ytdlp, logger }: ShutdownTarg
       return;
     }
     shuttingDown = true;
-    logger.info(`Received ${reason}, shutting down...`);
+    logger.info(`Shutdown started (${reason})`);
 
-    // Queues, players and FFmpeg children first, then the gateway connection.
+    // Nothing may keep the process alive past the deadline. The timer does not
+    // hold the event loop open, so a clean exit is never delayed by it.
+    const watchdog = setTimeout(() => {
+      logger.error(
+        `Shutdown did not finish within ${SHUTDOWN_DEADLINE_MS}ms; forcing the process to exit`,
+      );
+      process.exit(exitCode === 0 ? 1 : exitCode);
+    }, SHUTDOWN_DEADLINE_MS);
+    watchdog.unref();
+
+    // Players abort their in-flight attempts and stop FFmpeg; the runner then
+    // kills whatever extraction is still running; the gateway goes last.
     try {
       players.destroyAll();
     } catch (error) {
@@ -92,12 +111,14 @@ function installProcessHandlers({ client, players, ytdlp, logger }: ShutdownTarg
     client
       .destroy()
       .then(() => {
-        logger.info('Discord client destroyed. Bye!');
+        logger.info('Discord client destroyed');
       })
       .catch((error: unknown) => {
         logger.error('Failed to destroy the Discord client cleanly', error);
       })
       .finally(() => {
+        clearTimeout(watchdog);
+        logger.info('Shutdown complete. Bye!');
         process.exit(exitCode);
       });
   };

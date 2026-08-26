@@ -178,7 +178,7 @@ describe('YtDlpRunner - process handling', () => {
 
     runner.destroy();
 
-    await expect(active).rejects.toMatchObject({ code: 'unknown' });
+    await expect(active).rejects.toMatchObject({ code: 'cancelled' });
     expect(child.kill).toHaveBeenCalledTimes(1);
     expect(child.stdout.destroyed).toBe(true);
     expect(child.stderr.destroyed).toBe(true);

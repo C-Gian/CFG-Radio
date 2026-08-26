@@ -14,6 +14,8 @@ export const PROVIDER_ERROR_CODES = [
   'extractor_failed',
   'timeout',
   'unsupported',
+  /** The attempt was deliberately cancelled: never a provider fault. */
+  'cancelled',
   'unknown',
 ] as const;
 
@@ -45,4 +47,13 @@ export function isProviderError(error: unknown): error is ProviderError {
 /** The code of `error`, or `unknown` for anything that is not a provider failure. */
 export function providerErrorCode(error: unknown): ProviderErrorCode {
   return isProviderError(error) ? error.code : 'unknown';
+}
+
+/** Builds the error every cancelled external operation rejects with. */
+export function cancelledError(what: string): ProviderError {
+  return new ProviderError('cancelled', `${what} was cancelled`);
+}
+
+export function isCancelledError(error: unknown): boolean {
+  return isProviderError(error) && error.code === 'cancelled';
 }

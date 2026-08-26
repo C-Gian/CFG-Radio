@@ -19,8 +19,21 @@ export interface PlayableSource {
   readonly headers?: Readonly<Record<string, string>>;
 }
 
+/**
+ * What a resolver is allowed to know about the attempt it serves.
+ *
+ * The signal belongs to one playback attempt in one guild: aborting it must
+ * never touch another track, another guild or an unrelated child process.
+ */
+export interface PlaybackAttemptContext {
+  readonly signal: AbortSignal;
+}
+
 /** Turns the logical identity of a track into something playable. */
-export type TrackResolver = (track: Track) => Promise<PlayableSource> | PlayableSource;
+export type TrackResolver = (
+  track: Track,
+  context: PlaybackAttemptContext,
+) => Promise<PlayableSource> | PlayableSource;
 
 /** Where the primary playback attempt failed before a track became current. */
 export type PlaybackFailureStage = 'resolution' | 'start';
@@ -29,6 +42,8 @@ export interface PlaybackFallbackRequest {
   readonly track: Track;
   readonly stage: PlaybackFailureStage;
   readonly error: unknown;
+  /** Aborted as soon as the attempt this fallback serves is superseded. */
+  readonly signal: AbortSignal;
 }
 
 /**

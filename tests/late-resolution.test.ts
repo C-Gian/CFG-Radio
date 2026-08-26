@@ -219,10 +219,11 @@ describe('createTrackResolver', () => {
     const json = vi.fn().mockResolvedValue({ url: 'https://media.test/a.webm' });
     const resolve = createTrackResolver({ ytdlp: { json } as unknown as YtDlpRunner });
 
-    const youtube = await resolve(youtubeTrack('aaaaaaaaaaa'));
+    const context = { signal: new AbortController().signal };
+    const youtube = await resolve(youtubeTrack('aaaaaaaaaaa'), context);
     expect(youtube).toMatchObject({ kind: 'url', input: 'https://media.test/a.webm' });
 
-    const local = await resolve(localTrack('arpeggio'));
+    const local = await resolve(localTrack('arpeggio'), context);
     expect(local).toMatchObject({ kind: 'file' });
     expect(local.input.replaceAll('\\', '/')).toMatch(/\/assets\/arpeggio\.opus$/);
     expect(json).toHaveBeenCalledTimes(1);

@@ -1,5 +1,5 @@
 import type { DiscordGatewayAdapterCreator } from '@discordjs/voice';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { PlayerService } from '../src/player/player-service.js';
 import { VoiceSessionManager } from '../src/voice/session-manager.js';
@@ -200,5 +200,51 @@ describe('PlayerService concurrent joins', () => {
     await expect(joining).rejects.toThrow(/disconnected|cancelled/i);
     expect(players.get('guild-1')).toBeUndefined();
     expect(sessions.every((session) => session.destroyCount > 0)).toBe(true);
+  });
+});
+
+describe('PlayerService shutdown', () => {
+  it('aborts an attempt that is still resolving', async () => {
+    const started: AbortSignal[] = [];
+    const logger = fakeLogger();
+    const voice = new VoiceSessionManager({
+      ffmpegPath: 'ffmpeg',
+      logger,
+      createSession: (options) => Promise.resolve(new FakeSession(options)),
+    });
+    const players = new PlayerService({
+      voice,
+      resolve: (_track, context) =>
+        new Promise((_resolve, reject) => {
+          started.push(context.signal);
+          context.signal.addEventListener('abort', () => {
+            reject(new Error('aborted'));
+          });
+        }),
+      logger,
+    });
+
+    const player = await players.join(request);
+    const starting = player.enqueue(localTrack('wedged'));
+    await vi.waitFor(() => {
+      expect(started).toHaveLength(1);
+    });
+
+    players.destroyAll();
+    await starting;
+
+    expect(started[0]?.aborted).toBe(true);
+  });
+
+  it('refuses to join a guild once shutdown started, and stays idempotent', async () => {
+    const { players } = createService();
+    await players.join(request);
+
+    players.destroyAll();
+    players.destroyAll();
+
+    await expect(players.join({ ...request, guildId: 'guild-late' })).rejects.toThrow(
+      /shutting down/i,
+    );
   });
 });

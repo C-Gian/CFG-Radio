@@ -63,6 +63,7 @@ describe('SoundCloud fallback eligibility', () => {
         isSoundCloudFallbackEligible({
           track: youtubeTrack(),
           stage: 'resolution',
+          signal: new AbortController().signal,
           error: new ProviderError(code, 'primary failed'),
         }),
       ).toBe(true);
@@ -76,6 +77,7 @@ describe('SoundCloud fallback eligibility', () => {
         isSoundCloudFallbackEligible({
           track: youtubeTrack(),
           stage: 'resolution',
+          signal: new AbortController().signal,
           error: new ProviderError(code, 'primary failed'),
         }),
       ).toBe(false);
@@ -87,6 +89,7 @@ describe('SoundCloud fallback eligibility', () => {
       isSoundCloudFallbackEligible({
         track: youtubeTrack(),
         stage: 'start',
+        signal: new AbortController().signal,
         error: new Error('FFmpeg could not open primary source'),
       }),
     ).toBe(true);
@@ -94,6 +97,7 @@ describe('SoundCloud fallback eligibility', () => {
       isSoundCloudFallbackEligible({
         track: localTrack('arpeggio'),
         stage: 'start',
+        signal: new AbortController().signal,
         error: new Error('local file failed'),
       }),
     ).toBe(false);
@@ -334,6 +338,7 @@ describe('real SoundCloud fallback resolver with fake yt-dlp', () => {
     return {
       track: youtubeTrack(),
       stage: 'resolution',
+      signal: new AbortController().signal,
       error: new ProviderError(code, 'primary failed'),
     };
   }

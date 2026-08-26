@@ -312,14 +312,28 @@ describe('/play - queueing', () => {
     expect(player.snapshot().upcoming[0]).toMatchObject({ source: 'youtube' });
   });
 
-  it('reports a playback failure that happens on immediate start', async () => {
-    const { context, transport } = contextWithPlayer('guild-1', null);
+  it('retries once with a fresh source when the pre-resolved one fails', async () => {
+    const { context, transport, player } = contextWithPlayer('guild-1', null);
+    // Only the source the command carried is stale; a fresh resolution works.
     transport.failFor(fakeImmediateSource.input);
     const { interaction, reply } = playInteraction(VIDEO_URL);
 
     await play.execute(interaction, context);
 
+    expect(replyContent(reply)).toContain('Playing **A YouTube Song**');
+    expect(player.current?.sourceId).toBe('dQw4w9WgXcQ');
+    expect(transport.played).toHaveLength(1);
+  });
+
+  it('reports a playback failure when the retry fails as well', async () => {
+    const { context, transport } = contextWithPlayer('guild-1', null);
+    transport.failFor(fakeImmediateSource.input, 'dQw4w9WgXcQ.opus');
+    const { interaction, reply } = playInteraction(VIDEO_URL);
+
+    await play.execute(interaction, context);
+
     expect(replyContent(reply)).toContain('I could not start **A YouTube Song**');
+    expect(transport.played).toEqual([]);
   });
 
   it('answers when joining the voice channel fails', async () => {

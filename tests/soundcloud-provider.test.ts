@@ -128,7 +128,7 @@ describe('SoundCloud playable resolution', () => {
     });
     const source = await resolveSoundCloudPlayback({ json } as unknown as YtDlpRunner, candidate);
 
-    expect(json).toHaveBeenCalledWith(soundCloudPlaybackArgs(PAGE_URL));
+    expect(json.mock.calls[0]?.[0]).toEqual(soundCloudPlaybackArgs(PAGE_URL));
     expect(source).toEqual({
       kind: 'url',
       input: DIRECT_URL,

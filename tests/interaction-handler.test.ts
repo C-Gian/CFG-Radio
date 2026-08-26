@@ -1,0 +1,117 @@
+import type { Interaction } from 'discord.js';
+import { describe, expect, it, vi } from 'vitest';
+
+import { createCommandRegistry, type Command } from '../src/discord/command.js';
+import { handleInteraction } from '../src/discord/interaction-handler.js';
+
+function fakeLogger() {
+  return { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() };
+}
+
+interface FakeInteractionOptions {
+  chatInput?: boolean;
+  commandName?: string;
+  replied?: boolean;
+  deferred?: boolean;
+  reply?: ReturnType<typeof vi.fn>;
+}
+
+function fakeInteraction(options: FakeInteractionOptions = {}) {
+  const reply = options.reply ?? vi.fn().mockResolvedValue(undefined);
+  const followUp = vi.fn().mockResolvedValue(undefined);
+  const interaction = {
+    isChatInputCommand: () => options.chatInput ?? true,
+    commandName: options.commandName ?? 'ping',
+    replied: options.replied ?? false,
+    deferred: options.deferred ?? false,
+    reply,
+    followUp,
+  };
+  return { interaction: interaction as unknown as Interaction, reply, followUp };
+}
+
+function commandThat(execute: Command['execute'], name = 'ping'): Command {
+  return { data: { name, toJSON: () => ({ name, description: name }) }, execute };
+}
+
+const failingCommand = (): Promise<void> => Promise.reject(new Error('boom'));
+
+describe('handleInteraction', () => {
+  it('ignores non chat-input interactions', async () => {
+    const execute = vi.fn();
+    const { interaction, reply } = fakeInteraction({ chatInput: false });
+
+    await handleInteraction(
+      interaction,
+      createCommandRegistry([commandThat(execute)]),
+      fakeLogger(),
+    );
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('dispatches to the matching command', async () => {
+    const execute = vi.fn().mockResolvedValue(undefined);
+    const { interaction } = fakeInteraction();
+
+    await handleInteraction(
+      interaction,
+      createCommandRegistry([commandThat(execute)]),
+      fakeLogger(),
+    );
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0]?.[0]).toBe(interaction);
+  });
+
+  it('answers and warns when the command is unknown', async () => {
+    const logger = fakeLogger();
+    const { interaction, reply } = fakeInteraction({ commandName: 'unknown' });
+
+    await handleInteraction(interaction, createCommandRegistry([]), logger);
+
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reject when the command throws, and reports the failure', async () => {
+    const logger = fakeLogger();
+    const { interaction, reply } = fakeInteraction();
+
+    await expect(
+      handleInteraction(interaction, createCommandRegistry([commandThat(failingCommand)]), logger),
+    ).resolves.toBeUndefined();
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    expect(reply.mock.calls[0]?.[0]).toMatchObject({
+      content: expect.stringContaining('went wrong') as unknown,
+    });
+  });
+
+  it('follows up instead of replying when the interaction was already answered', async () => {
+    const { interaction, reply, followUp } = fakeInteraction({ replied: true });
+
+    await handleInteraction(
+      interaction,
+      createCommandRegistry([commandThat(failingCommand)]),
+      fakeLogger(),
+    );
+
+    expect(followUp).toHaveBeenCalledTimes(1);
+    expect(reply).not.toHaveBeenCalled();
+  });
+
+  it('survives a Discord API failure while reporting the error', async () => {
+    const logger = fakeLogger();
+    const { interaction } = fakeInteraction({
+      reply: vi.fn().mockRejectedValue(new Error('unknown interaction')),
+    });
+
+    await expect(
+      handleInteraction(interaction, createCommandRegistry([commandThat(failingCommand)]), logger),
+    ).resolves.toBeUndefined();
+
+    expect(logger.error).toHaveBeenCalledTimes(2);
+  });
+});

@@ -11,6 +11,8 @@ export interface AppConfig {
   readonly ffmpegPath: string;
   /** Executable used to spawn yt-dlp; resolved through PATH by default. */
   readonly ytdlpPath: string;
+  /** Maximum valid tracks imported by one playlist command. */
+  readonly maxPlaylistTracks: number;
 }
 
 export const DEFAULTS = {
@@ -19,9 +21,15 @@ export const DEFAULTS = {
   idleDisconnectSeconds: 300,
   ffmpegPath: 'ffmpeg',
   ytdlpPath: 'yt-dlp',
+  maxPlaylistTracks: 100,
 } as const satisfies Pick<
   AppConfig,
-  'logLevel' | 'defaultVolume' | 'idleDisconnectSeconds' | 'ffmpegPath' | 'ytdlpPath'
+  | 'logLevel'
+  | 'defaultVolume'
+  | 'idleDisconnectSeconds'
+  | 'ffmpegPath'
+  | 'ytdlpPath'
+  | 'maxPlaylistTracks'
 >;
 
 /**
@@ -128,6 +136,14 @@ export function loadConfig(env: RawEnv = process.env): AppConfig {
     ),
     ffmpegPath: optionalString(env, 'FFMPEG_PATH', DEFAULTS.ffmpegPath),
     ytdlpPath: optionalString(env, 'YTDLP_PATH', DEFAULTS.ytdlpPath),
+    maxPlaylistTracks: optionalInteger(
+      env,
+      'MAX_PLAYLIST_TRACKS',
+      DEFAULTS.maxPlaylistTracks,
+      1,
+      500,
+      issues,
+    ),
   };
 
   if (issues.length > 0) {

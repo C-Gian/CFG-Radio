@@ -89,6 +89,8 @@ export class YtDlpRunner {
   private readonly logger: Logger;
   private readonly timeoutMs: number;
   private readonly spawnFn: SpawnYtDlp;
+  private readonly activeRuns = new Set<() => void>();
+  private destroyed = false;
 
   constructor(options: YtDlpRunnerOptions) {
     this.ytdlpPath = options.ytdlpPath;
@@ -103,6 +105,9 @@ export class YtDlpRunner {
    * @throws {ProviderError} classified from the exit code and stderr.
    */
   run(args: readonly string[]): Promise<YtDlpResult> {
+    if (this.destroyed) {
+      return Promise.reject(new ProviderError('unknown', 'yt-dlp runner is shutting down'));
+    }
     return new Promise<YtDlpResult>((resolve, reject) => {
       let child: YtDlpChild;
       try {
@@ -119,6 +124,7 @@ export class YtDlpRunner {
       let stdout = '';
       let stderr = '';
       let settled = false;
+      let abort = (): void => undefined;
 
       const finish = (outcome: () => void): void => {
         if (settled) {
@@ -126,6 +132,7 @@ export class YtDlpRunner {
         }
         settled = true;
         clearTimeout(timer);
+        this.activeRuns.delete(abort);
         outcome();
       };
 
@@ -149,6 +156,14 @@ export class YtDlpRunner {
       }, this.timeoutMs);
       // Never keep the process alive just for this timer.
       timer.unref();
+
+      abort = (): void => {
+        finish(() => {
+          kill();
+          reject(new ProviderError('unknown', 'yt-dlp was stopped during shutdown'));
+        });
+      };
+      this.activeRuns.add(abort);
 
       child.stdout?.setEncoding('utf8');
       child.stdout?.on('data', (chunk: string) => (stdout += chunk));
@@ -219,6 +234,17 @@ export class YtDlpRunner {
   async version(): Promise<string> {
     const { stdout } = await this.run(['--version']);
     return stdout.trim();
+  }
+
+  /** Kills every active extraction and prevents new ones. Idempotent. */
+  destroy(): void {
+    if (this.destroyed) {
+      return;
+    }
+    this.destroyed = true;
+    for (const abort of [...this.activeRuns]) {
+      abort();
+    }
   }
 }
 

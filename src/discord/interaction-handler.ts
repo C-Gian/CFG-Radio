@@ -16,14 +16,25 @@ async function respondSafely(
   logger: Logger,
 ): Promise<void> {
   try {
-    if (interaction.replied || interaction.deferred) {
+    if (interaction.replied) {
       await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+    } else if (interaction.deferred) {
+      await interaction.editReply({ content });
     } else {
       await interaction.reply({ content, flags: MessageFlags.Ephemeral });
     }
   } catch (error) {
     logger.error('Failed to send an error response to the interaction', error);
   }
+}
+
+/** Discord says these interactions cannot be acknowledged again. */
+function isFinalInteractionError(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null || !('code' in error)) {
+    return false;
+  }
+  const code = (error as { readonly code?: unknown }).code;
+  return code === 10062 || code === 40060 || code === '10062' || code === '40060';
 }
 
 /**
@@ -55,6 +66,11 @@ export async function handleInteraction(
     await command.execute(interaction, context);
   } catch (error) {
     logger.error(`Command "${interaction.commandName}" failed`, error);
+    if (isFinalInteractionError(error)) {
+      // A retry can only produce another Unknown Interaction / Already
+      // Acknowledged response and obscure the original failure.
+      return;
+    }
     await respondSafely(interaction, GENERIC_ERROR_MESSAGE, logger);
   }
 }

@@ -7,6 +7,7 @@ import {
   type Command,
 } from '../src/discord/command.js';
 import { commands } from '../src/discord/commands/index.js';
+import { handleInteraction } from '../src/discord/interaction-handler.js';
 import { disconnect } from '../src/discord/commands/disconnect.js';
 import { nowPlaying } from '../src/discord/commands/nowplaying.js';
 import { pause } from '../src/discord/commands/pause.js';
@@ -105,11 +106,14 @@ describe('/ping', () => {
 describe('/playlocal', () => {
   it('starts the default tone when the player is idle', async () => {
     const { context, player } = contextWithPlayer('guild-1', null);
-    const { interaction, reply } = fakeChatInput();
+    const { interaction, reply, deferReply, editReply, interactionReply } = fakeChatInput();
 
     await playLocal.execute(interaction, context);
 
     expect(replyContent(reply)).toContain('Playing **Test tone: arpeggio**');
+    expect(deferReply).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(interactionReply).not.toHaveBeenCalled();
     expect(player.current).toMatchObject({ source: 'local', sourceId: 'arpeggio' });
   });
 
@@ -241,11 +245,15 @@ describe('/skip', () => {
     const { context, player } = contextWithPlayer();
     await player.enqueue(localTrack('a'));
     await player.enqueue(localTrack('b'));
-    const { interaction, reply } = fakeChatInput();
+    const { interaction, reply, deferReply, editReply, interactionReply } = fakeChatInput();
 
     await skip.execute(interaction, context);
 
-    expect(replyContent(reply)).toContain('Now playing **Track b**');
+    expect(replyContent(reply)).toBe('Skipped. Now playing **Track b**.');
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(deferReply).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(interactionReply).not.toHaveBeenCalled();
     expect(player.current?.sourceId).toBe('b');
   });
 
@@ -256,7 +264,7 @@ describe('/skip', () => {
 
     await skip.execute(interaction, context);
 
-    expect(replyContent(reply)).toContain('idle');
+    expect(replyContent(reply)).toBe('Skipped. The queue is empty, so I am idle now.');
     expect(player.current).toBeUndefined();
   });
 
@@ -268,6 +276,79 @@ describe('/skip', () => {
 
     expect(replyContent(reply)).toContain('Nothing is playing');
   });
+
+  it('defers before waiting for a slow next-track resolution', async () => {
+    let finishSkip:
+      | ((result: {
+          skipped: ReturnType<typeof localTrack>;
+          next: ReturnType<typeof localTrack>;
+        }) => void)
+      | undefined;
+    const skipOperation = vi.fn(
+      () =>
+        new Promise<{
+          skipped: ReturnType<typeof localTrack>;
+          next: ReturnType<typeof localTrack>;
+        }>((resolve) => {
+          finishSkip = resolve;
+        }),
+    );
+    const { context } = fakeContext({ get: vi.fn(() => ({ skip: skipOperation })) });
+    const { interaction, reply, deferReply, editReply, interactionReply } = fakeChatInput();
+
+    const execution = skip.execute(interaction, context);
+    await vi.waitFor(() => {
+      expect(skipOperation).toHaveBeenCalledTimes(1);
+    });
+
+    expect(deferReply.mock.invocationCallOrder[0]).toBeLessThan(
+      skipOperation.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
+    expect(reply).not.toHaveBeenCalled();
+    expect(interaction.deferred).toBe(true);
+
+    finishSkip?.({ skipped: localTrack('a'), next: localTrack('slow-next') });
+    await execution;
+
+    expect(replyContent(reply)).toBe('Skipped. Now playing **Track slow-next**.');
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(interactionReply).not.toHaveBeenCalled();
+  });
+
+  it('reports C after unavailable B fails during skip', async () => {
+    const { context, player, transport } = contextWithPlayer();
+    transport.failFor('b.opus');
+    await player.enqueue(localTrack('a'));
+    await player.enqueue(localTrack('b'));
+    await player.enqueue(localTrack('c'));
+    const { interaction, reply, deferReply, editReply, interactionReply } = fakeChatInput();
+
+    await skip.execute(interaction, context);
+
+    expect(player.current?.sourceId).toBe('c');
+    expect(transport.played.map((source) => source.input)).toEqual(['a.opus', 'c.opus']);
+    expect(replyContent(reply)).toBe('Skipped. Now playing **Track c**.');
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(deferReply).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(interactionReply).not.toHaveBeenCalled();
+  });
+
+  it('edits one deferred error response when skip rejects', async () => {
+    const { context } = fakeContext({
+      get: vi.fn(() => ({ skip: vi.fn().mockRejectedValue(new Error('resolver failed')) })),
+    });
+    const { interaction, reply, deferReply, editReply, interactionReply } = fakeChatInput();
+
+    await handleInteraction(interaction, createCommandRegistry([skip]), context);
+
+    expect(deferReply).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(interactionReply).not.toHaveBeenCalled();
+    expect(reply).toHaveBeenCalledTimes(1);
+    expect(replyContent(reply)).toContain('Something went wrong');
+  });
 });
 
 describe('/stop', () => {
@@ -275,11 +356,14 @@ describe('/stop', () => {
     const { context, player, players } = contextWithPlayer();
     await player.enqueue(localTrack('a'));
     await player.enqueue(localTrack('b'));
-    const { interaction, reply } = fakeChatInput();
+    const { interaction, reply, deferReply, editReply, interactionReply } = fakeChatInput();
 
     await stop.execute(interaction, context);
 
     expect(replyContent(reply)).toContain('still in the voice channel');
+    expect(deferReply).toHaveBeenCalledTimes(1);
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(interactionReply).not.toHaveBeenCalled();
     expect(player.snapshot()).toMatchObject({ status: 'idle', upcoming: [] });
     expect(players.destroy).not.toHaveBeenCalled();
   });

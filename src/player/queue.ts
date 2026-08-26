@@ -23,6 +23,16 @@ export class TrackQueue {
     return this.tracks.push(track);
   }
 
+  /** Appends a batch without changing its order; returns the first position. */
+  enqueueMany(tracks: readonly Track[]): number | undefined {
+    if (tracks.length === 0) {
+      return undefined;
+    }
+    const firstPosition = this.tracks.length + 1;
+    this.tracks.push(...tracks);
+    return firstPosition;
+  }
+
   /** Removes and returns the head, or `undefined` when empty. */
   dequeue(): Track | undefined {
     return this.tracks.shift();

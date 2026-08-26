@@ -106,6 +106,64 @@ describe('late playback resolution', () => {
     expect(calls).toHaveLength(2);
     expect(transport.played).toHaveLength(2);
   });
+
+  it('resolves playlist A now, B only after A, and C only after B', async () => {
+    const { player, transport, calls } = createPlayer();
+    const [a, b, c] = [
+      youtubeTrack('aaaaaaaaaaa'),
+      youtubeTrack('bbbbbbbbbbb'),
+      youtubeTrack('ccccccccccc'),
+    ];
+
+    await player.enqueueMany([a, b, c]);
+    expect(calls.map((track) => track.sourceId)).toEqual(['aaaaaaaaaaa']);
+
+    transport.finishTrack();
+    await player.whenSettled();
+    expect(calls.map((track) => track.sourceId)).toEqual(['aaaaaaaaaaa', 'bbbbbbbbbbb']);
+
+    transport.finishTrack();
+    await player.whenSettled();
+    expect(calls.map((track) => track.sourceId)).toEqual([
+      'aaaaaaaaaaa',
+      'bbbbbbbbbbb',
+      'ccccccccccc',
+    ]);
+    expect(JSON.stringify(player.snapshot())).not.toContain('googlevideo');
+  });
+
+  it('continues to C when playlist item B fails during late resolution', async () => {
+    const { player, transport, calls } = createPlayer(new Set(['bbbbbbbbbbb']));
+    await player.enqueueMany([
+      youtubeTrack('aaaaaaaaaaa'),
+      youtubeTrack('bbbbbbbbbbb'),
+      youtubeTrack('ccccccccccc'),
+    ]);
+
+    transport.finishTrack();
+    await player.whenSettled();
+
+    expect(calls.map((track) => track.sourceId)).toEqual([
+      'aaaaaaaaaaa',
+      'bbbbbbbbbbb',
+      'ccccccccccc',
+    ]);
+    expect(player.current?.sourceId).toBe('ccccccccccc');
+  });
+
+  it('stop after B starts prevents any resolution of C', async () => {
+    const { player, calls } = createPlayer();
+    await player.enqueueMany([
+      youtubeTrack('aaaaaaaaaaa'),
+      youtubeTrack('bbbbbbbbbbb'),
+      youtubeTrack('ccccccccccc'),
+    ]);
+    await player.skip();
+    await player.stop();
+
+    expect(calls.map((track) => track.sourceId)).toEqual(['aaaaaaaaaaa', 'bbbbbbbbbbb']);
+    expect(player.snapshot().upcoming).toEqual([]);
+  });
 });
 
 describe('mixed local / YouTube queue', () => {

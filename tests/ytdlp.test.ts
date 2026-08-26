@@ -170,6 +170,20 @@ describe('YtDlpRunner - process handling', () => {
 
     await expect(promise).resolves.toBe('2026.07.04');
   });
+
+  it('kills active extraction on shutdown and refuses later work', async () => {
+    const { runner, child, spawnFn } = createRunner();
+    const active = runner.run(['--flat-playlist', '--dump-single-json', 'https://example.test']);
+
+    runner.destroy();
+
+    await expect(active).rejects.toMatchObject({ code: 'unknown' });
+    expect(child.kill).toHaveBeenCalledTimes(1);
+    expect(child.stdout.destroyed).toBe(true);
+    expect(child.stderr.destroyed).toBe(true);
+    await expect(runner.version()).rejects.toMatchObject({ code: 'unknown' });
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('classifyYtDlpFailure', () => {

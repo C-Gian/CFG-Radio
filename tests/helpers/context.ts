@@ -6,6 +6,7 @@ import type { CommandContext } from '../../src/discord/context.js';
 import { GuildPlayer } from '../../src/player/guild-player.js';
 import type { PlayerService } from '../../src/player/player-service.js';
 import type { YouTubeMetadata, YouTubeMetadataProvider } from '../../src/youtube/metadata.js';
+import type { YouTubePlaylistImport, YouTubePlaylistProvider } from '../../src/youtube/playlist.js';
 import { FakeTransport, fakeLogger, fakeResolver } from './fake-transport.js';
 
 export { fakeLogger };
@@ -19,6 +20,7 @@ export const fakeConfig: AppConfig = {
   idleDisconnectSeconds: 300,
   ffmpegPath: 'ffmpeg',
   ytdlpPath: 'yt-dlp',
+  maxPlaylistTracks: 100,
 };
 
 /** Metadata a fake YouTube provider hands back by default. */
@@ -29,6 +31,33 @@ export const fakeMetadata: YouTubeMetadata = {
   durationMs: 213_000,
   canonicalUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
   thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hq.jpg',
+};
+
+export const fakePlaylist: YouTubePlaylistImport = {
+  playlist: {
+    playlistId: 'PLabcdefghijklmnop',
+    title: 'A YouTube Playlist',
+    uploader: 'A Channel',
+    canonicalUrl: 'https://www.youtube.com/playlist?list=PLabcdefghijklmnop',
+    itemCount: 3,
+  },
+  items: [
+    fakeMetadata,
+    {
+      ...fakeMetadata,
+      videoId: 'aaaaaaaaaaa',
+      title: 'Playlist Track B',
+      canonicalUrl: 'https://www.youtube.com/watch?v=aaaaaaaaaaa',
+    },
+    {
+      ...fakeMetadata,
+      videoId: 'bbbbbbbbbbb',
+      title: 'Playlist Track C',
+      canonicalUrl: 'https://www.youtube.com/watch?v=bbbbbbbbbbb',
+    },
+  ],
+  skippedCount: 0,
+  limited: false,
 };
 
 export interface FakePlayers {
@@ -42,15 +71,22 @@ export interface FakePlayers {
 export interface FakeContextOverrides extends Partial<FakePlayers> {
   /** Replaces the default metadata provider (which always succeeds). */
   fetchMetadata?: ReturnType<typeof vi.fn>;
+  fetchPlaylist?: ReturnType<typeof vi.fn>;
 }
 
 /** A command context wired to spies - no Discord, no voice, no yt-dlp. */
 export function fakeContext(overrides: FakeContextOverrides = {}) {
-  const { fetchMetadata: fetchMetadataOverride, ...playerOverrides } = overrides;
+  const {
+    fetchMetadata: fetchMetadataOverride,
+    fetchPlaylist: fetchPlaylistOverride,
+    ...playerOverrides
+  } = overrides;
   const logger = fakeLogger();
   const fetchMetadata = fetchMetadataOverride ?? vi.fn().mockResolvedValue(fakeMetadata);
-  const youtube: YouTubeMetadataProvider = {
+  const fetchPlaylist = fetchPlaylistOverride ?? vi.fn().mockResolvedValue(fakePlaylist);
+  const youtube: YouTubeMetadataProvider & YouTubePlaylistProvider = {
     fetchMetadata: fetchMetadata as unknown as YouTubeMetadataProvider['fetchMetadata'],
+    fetchPlaylist: fetchPlaylist as unknown as YouTubePlaylistProvider['fetchPlaylist'],
   };
   const players: FakePlayers = {
     get: vi.fn().mockReturnValue(undefined),
@@ -68,7 +104,7 @@ export function fakeContext(overrides: FakeContextOverrides = {}) {
     youtube,
   };
 
-  return { context, logger, players, fetchMetadata };
+  return { context, logger, players, fetchMetadata, fetchPlaylist };
 }
 
 /**
@@ -80,7 +116,7 @@ export function contextWithPlayer(guildId = 'guild-1', channelId: string | null 
   const logger = fakeLogger();
   const player = new GuildPlayer({ guildId, transport, resolve: fakeResolver, logger });
 
-  const { context, players, fetchMetadata } = fakeContext({
+  const { context, players, fetchMetadata, fetchPlaylist } = fakeContext({
     get: vi.fn((id: string) => (id === guildId ? player : undefined)),
     join: vi.fn(() => Promise.resolve(player)),
     channelIdOf: vi.fn((id: string) => (id === guildId ? channelId : undefined)),
@@ -93,7 +129,7 @@ export function contextWithPlayer(guildId = 'guild-1', channelId: string | null 
     }),
   });
 
-  return { context, players, player, transport, logger, fetchMetadata };
+  return { context, players, player, transport, logger, fetchMetadata, fetchPlaylist };
 }
 
 export interface FakeInteractionOptions {
@@ -112,8 +148,14 @@ export function fakeChatInput(options: FakeInteractionOptions = {}) {
   const userChannelId = options.userChannelId === undefined ? 'vc-1' : options.userChannelId;
   const allowed = options.missingPermissions !== true;
 
-  const reply = vi.fn().mockResolvedValue(undefined);
-  const editReply = vi.fn().mockResolvedValue(undefined);
+  // `reply` is the aggregate final-response spy retained for existing tests;
+  // the method-specific spies prove deferred commands never double-ack.
+  const reply = vi.fn<(payload: unknown) => Promise<void>>().mockResolvedValue(undefined);
+  const interactionReply = vi.fn<(payload: unknown) => Promise<void>>();
+  const editReply = vi.fn(async (payload: unknown): Promise<void> => {
+    await reply(payload);
+  });
+  const deferReply = vi.fn<() => Promise<void>>();
 
   const channel =
     userChannelId === null
@@ -127,12 +169,14 @@ export function fakeChatInput(options: FakeInteractionOptions = {}) {
   const me = { id: 'bot-1' };
 
   const interaction = {
+    commandName: 'skip',
+    isChatInputCommand: () => true,
     user: { id: userId },
     deferred: false,
     replied: false,
-    reply,
+    reply: interactionReply,
     editReply,
-    deferReply: vi.fn().mockResolvedValue(undefined),
+    deferReply,
     options: {
       getString: (name: string) => options.stringOptions?.[name] ?? null,
     },
@@ -150,10 +194,21 @@ export function fakeChatInput(options: FakeInteractionOptions = {}) {
           },
   };
 
+  interactionReply.mockImplementation(async (payload: unknown): Promise<void> => {
+    interaction.replied = true;
+    await reply(payload);
+  });
+  deferReply.mockImplementation(() => {
+    interaction.deferred = true;
+    return Promise.resolve();
+  });
+
   return {
     interaction: interaction as unknown as ChatInputCommandInteraction,
     reply,
     editReply,
+    deferReply,
+    interactionReply,
   };
 }
 

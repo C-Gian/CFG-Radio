@@ -23,6 +23,7 @@ describe('loadConfig', () => {
       idleDisconnectSeconds: DEFAULTS.idleDisconnectSeconds,
       ffmpegPath: DEFAULTS.ffmpegPath,
       ytdlpPath: DEFAULTS.ytdlpPath,
+      maxPlaylistTracks: DEFAULTS.maxPlaylistTracks,
     });
   });
 
@@ -32,11 +33,13 @@ describe('loadConfig', () => {
       LOG_LEVEL: ' DEBUG ',
       DEFAULT_VOLUME: '55',
       IDLE_DISCONNECT_SECONDS: '0',
+      MAX_PLAYLIST_TRACKS: '250',
     });
 
     expect(config.logLevel).toBe('debug');
     expect(config.defaultVolume).toBe(55);
     expect(config.idleDisconnectSeconds).toBe(0);
+    expect(config.maxPlaylistTracks).toBe(250);
   });
 
   it('uses the FFmpeg executable from the environment when provided', () => {
@@ -85,6 +88,10 @@ describe('loadConfig', () => {
     expect(() => loadConfig({ ...validEnv(), IDLE_DISCONNECT_SECONDS: '10s' })).toThrow(
       ConfigError,
     );
+  });
+
+  it.each(['0', '501', '1.5', 'many'])('rejects MAX_PLAYLIST_TRACKS=%s', (value) => {
+    expect(() => loadConfig({ ...validEnv(), MAX_PLAYLIST_TRACKS: value })).toThrow(ConfigError);
   });
 
   it('never leaks a value in the error message', () => {

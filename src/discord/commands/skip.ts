@@ -1,5 +1,6 @@
 import {
   InteractionContextType,
+  MessageFlags,
   SlashCommandBuilder,
   type ChatInputCommandInteraction,
 } from 'discord.js';
@@ -16,6 +17,8 @@ export const skip: Command = {
     .setContexts(InteractionContextType.Guild),
 
   async execute(interaction: ChatInputCommandInteraction, context: CommandContext) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
     const access = await requireControlAccess(interaction, context);
     if (access === undefined) {
       return;
@@ -34,12 +37,11 @@ export const skip: Command = {
       return;
     }
 
-    const skippedPart = skipped === undefined ? '' : `Skipped **${skipped.title}**. `;
     await respond(
       interaction,
       next === undefined
-        ? `${skippedPart}The queue is empty, so I am idle now.`
-        : `${skippedPart}Now playing **${next.title}**.`,
+        ? 'Skipped. The queue is empty, so I am idle now.'
+        : `Skipped. Now playing **${next.title}**.`,
     );
   },
 };

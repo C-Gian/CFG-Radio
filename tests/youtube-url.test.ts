@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { canonicalWatchUrl, classifyInput } from '../src/youtube/url.js';
+import { canonicalPlaylistUrl, canonicalWatchUrl, classifyInput } from '../src/youtube/url.js';
 
 const VIDEO_ID = 'dQw4w9WgXcQ';
 
@@ -47,10 +47,28 @@ describe('classifyInput - supported videos', () => {
   });
 });
 
+describe('classifyInput - supported playlists', () => {
+  const playlistId = 'PLabcdefghijklmnop';
+
+  it.each([
+    `https://www.youtube.com/playlist?list=${playlistId}`,
+    `https://youtube.com/playlist?list=${playlistId}&si=share-token`,
+    `https://m.youtube.com/playlist?feature=share&list=${playlistId}`,
+    `https://music.youtube.com/playlist?list=${playlistId}`,
+  ])('accepts %s', (input) => {
+    expect(classifyInput(input)).toEqual({
+      kind: 'youtube-playlist',
+      playlistId,
+      canonicalUrl: canonicalPlaylistUrl(playlistId),
+    });
+  });
+});
+
 describe('classifyInput - rejected input', () => {
   it.each([
-    ['https://www.youtube.com/playlist?list=PLabcdefghijklmnop', 'playlist'],
-    ['https://youtube.com/watch?list=PLabcdefghijklmnop', 'playlist'],
+    ['https://www.youtube.com/playlist', 'malformed'],
+    ['https://www.youtube.com/playlist?feature=share', 'malformed'],
+    ['https://youtube.com/watch?list=PLabcdefghijklmnop', 'malformed'],
     ['https://www.youtube.com/results?search_query=lofi', 'search'],
     ['never gonna give you up', 'search'],
     ['', 'malformed'],
@@ -63,6 +81,7 @@ describe('classifyInput - rejected input', () => {
     'https://notyoutube.com/watch?v=dQw4w9WgXcQ',
     'https://www.youtube.com.attacker.test/watch?v=dQw4w9WgXcQ',
     'https://evil.example/youtube.com/watch?v=dQw4w9WgXcQ',
+    'https://youtube.com.evil.example/playlist?list=PLabcdefghijklmnop',
     'https://soundcloud.com/artist/track',
   ])('refuses the lookalike host %s', (input) => {
     expect(classifyInput(input)).toEqual({ kind: 'unsupported', reason: 'not-youtube' });

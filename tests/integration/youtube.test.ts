@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { FfmpegPipeline, probeFfmpeg } from '../../src/audio/ffmpeg.js';
 import { createTrackResolver } from '../../src/audio/track-resolver.js';
@@ -6,6 +6,7 @@ import { ffmpegPathFromEnv, ytdlpPathFromEnv } from '../../src/config/env.js';
 import { isProviderError } from '../../src/player/provider-error.js';
 import { createTrack } from '../../src/player/track.js';
 import { fetchYouTubeMetadata, toYouTubeTrack } from '../../src/youtube/metadata.js';
+import { fetchYouTubePlaylist, playlistItemsToTracks } from '../../src/youtube/playlist.js';
 import { classifyInput } from '../../src/youtube/url.js';
 import { YtDlpRunner } from '../../src/youtube/ytdlp.js';
 import { fakeLogger } from '../helpers/fake-transport.js';
@@ -21,6 +22,10 @@ import { fakeLogger } from '../helpers/fake-transport.js';
  * no account, no cookie and no region.
  */
 const VIDEO_URL = process.env.YOUTUBE_TEST_URL ?? 'https://www.youtube.com/watch?v=jNQXAC9IVRw';
+/** Public playlist currently containing three playable items and one unavailable stub. */
+const PLAYLIST_URL =
+  process.env.YOUTUBE_PLAYLIST_TEST_URL ??
+  'https://www.youtube.com/playlist?list=PLcvyLyVrgXOGqRjpeEvxMXMQ85PtzfLVc';
 
 const ytdlpPath = ytdlpPathFromEnv();
 const ffmpegPath = ffmpegPathFromEnv();
@@ -104,6 +109,83 @@ describe('YouTube playback resolution (live)', () => {
       logger,
     });
 
+    const bytes = await new Promise<number>((resolveBytes, reject) => {
+      let total = 0;
+      let head = Buffer.alloc(0);
+      pipeline.output.on('data', (chunk: Buffer) => {
+        total += chunk.byteLength;
+        if (head.byteLength < 4) {
+          head = Buffer.concat([head, chunk]);
+        }
+        if (total > 30_000) {
+          expect(head.subarray(0, 4).toString('ascii')).toBe('OggS');
+          pipeline.stop();
+          resolveBytes(total);
+        }
+      });
+      pipeline.output.on('end', () => {
+        resolveBytes(total);
+      });
+      pipeline.output.on('error', reject);
+    });
+
+    pipeline.stop();
+    expect(bytes).toBeGreaterThan(10_000);
+  });
+});
+
+describe('YouTube playlist metadata and first playback (live)', () => {
+  it('imports flat metadata, then resolves and streams only the first item', async () => {
+    const classified = classifyInput(PLAYLIST_URL);
+    if (classified.kind !== 'youtube-playlist') {
+      throw new Error('the configured playlist test URL is not a YouTube playlist');
+    }
+
+    const jsonSpy = vi.spyOn(runner, 'json');
+    const playlist = await fetchYouTubePlaylist(
+      runner,
+      classified.canonicalUrl,
+      classified.playlistId,
+      100,
+    );
+    const tracks = playlistItemsToTracks(playlist, 'integration-test', PLAYLIST_URL);
+
+    expect(playlist.items).toHaveLength(3);
+    expect(playlist.skippedCount).toBe(1);
+    expect(tracks.map((track) => track.sourceId)).toEqual([
+      'UPq1gr6YXCE',
+      '_n1o4D6G_XE',
+      'NoWqnjmh8KU',
+    ]);
+    expect(tracks.map((track) => track.title)).toEqual([
+      'Andrés Cepeda, Cali Y El Dandee - Te Voy a Amar ft. Cali Y El Dandee',
+      'Andrés Cepeda - Magia ft. Sebastián Yatra',
+      'Andrés Cepeda - Por El Resto De Mi Vida (Video Oficial)',
+    ]);
+    expect(tracks.map((track) => track.sourceId)).not.toContain('gyy7__NKZYE');
+    expect(JSON.stringify(playlist)).not.toContain('googlevideo');
+    expect(JSON.stringify(tracks)).not.toContain('googlevideo');
+    expect(jsonSpy).toHaveBeenCalledTimes(1);
+
+    const resolve = createTrackResolver({ ytdlp: runner });
+    const first = tracks[0];
+    if (first === undefined) {
+      throw new Error('the playlist unexpectedly has no first track');
+    }
+
+    const source = await resolve(first);
+    expect(jsonSpy).toHaveBeenCalledTimes(2);
+    jsonSpy.mockRestore();
+    expect(source.kind).toBe('url');
+    expect(source.input).toMatch(/^https:\/\//);
+    expect(JSON.stringify(tracks.slice(1))).not.toContain(source.input);
+
+    const pipeline = FfmpegPipeline.start({
+      ffmpegPath,
+      inputPath: source.input,
+      inputOptions: { headers: source.headers, remote: true },
+      logger,
+    });
     const bytes = await new Promise<number>((resolveBytes, reject) => {
       let total = 0;
       let head = Buffer.alloc(0);

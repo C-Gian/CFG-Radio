@@ -11,11 +11,13 @@ interface FakeInteractionOptions {
   replied?: boolean;
   deferred?: boolean;
   reply?: ReturnType<typeof vi.fn>;
+  editReply?: ReturnType<typeof vi.fn>;
 }
 
 function fakeInteraction(options: FakeInteractionOptions = {}) {
   const reply = options.reply ?? vi.fn().mockResolvedValue(undefined);
   const followUp = vi.fn().mockResolvedValue(undefined);
+  const editReply = options.editReply ?? vi.fn().mockResolvedValue(undefined);
   const interaction = {
     isChatInputCommand: () => options.chatInput ?? true,
     commandName: options.commandName ?? 'ping',
@@ -23,8 +25,9 @@ function fakeInteraction(options: FakeInteractionOptions = {}) {
     deferred: options.deferred ?? false,
     reply,
     followUp,
+    editReply,
   };
-  return { interaction: interaction as unknown as Interaction, reply, followUp };
+  return { interaction: interaction as unknown as Interaction, reply, followUp, editReply };
 }
 
 function commandThat(execute: Command['execute'], name = 'ping'): Command {
@@ -96,6 +99,41 @@ describe('handleInteraction', () => {
     expect(followUp).toHaveBeenCalledTimes(1);
     expect(reply).not.toHaveBeenCalled();
   });
+
+  it('edits the original response when a deferred command fails', async () => {
+    const { interaction, reply, followUp, editReply } = fakeInteraction({ deferred: true });
+
+    await handleInteraction(
+      interaction,
+      createCommandRegistry([commandThat(failingCommand)]),
+      fakeContext().context,
+    );
+
+    expect(editReply).toHaveBeenCalledTimes(1);
+    expect(reply).not.toHaveBeenCalled();
+    expect(followUp).not.toHaveBeenCalled();
+  });
+
+  it.each([10062, 40060, '10062', '40060'])(
+    'does not retry a terminal Discord interaction error (%s)',
+    async (code) => {
+      const terminalFailure = (): Promise<void> =>
+        Promise.reject(Object.assign(new Error('terminal interaction error'), { code }));
+      const { context, logger } = fakeContext();
+      const { interaction, reply, followUp, editReply } = fakeInteraction({ deferred: true });
+
+      await handleInteraction(
+        interaction,
+        createCommandRegistry([commandThat(terminalFailure)]),
+        context,
+      );
+
+      expect(logger.error).toHaveBeenCalledTimes(1);
+      expect(reply).not.toHaveBeenCalled();
+      expect(editReply).not.toHaveBeenCalled();
+      expect(followUp).not.toHaveBeenCalled();
+    },
+  );
 
   it('survives a Discord API failure while reporting the error', async () => {
     const { context, logger } = fakeContext();

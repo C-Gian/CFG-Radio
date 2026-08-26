@@ -3,15 +3,21 @@
  *
  * Pure and strict: the hostname is matched against an allowlist of exact
  * hosts, never with a substring test - `youtube.com.evil.example` must not be
- * accepted. Only single YouTube videos are supported in this milestone.
+ * accepted. Video-plus-playlist watch URLs deliberately remain single videos.
  */
-export type UnsupportedReason = 'playlist' | 'search' | 'not-youtube' | 'malformed';
+export type UnsupportedReason = 'search' | 'not-youtube' | 'malformed';
 
 export type ClassifiedInput =
   | {
       readonly kind: 'youtube-video';
       readonly videoId: string;
       /** Normalised watch URL handed to yt-dlp. */
+      readonly canonicalUrl: string;
+    }
+  | {
+      readonly kind: 'youtube-playlist';
+      readonly playlistId: string;
+      /** Normalised playlist URL handed to yt-dlp. */
       readonly canonicalUrl: string;
     }
   | { readonly kind: 'unsupported'; readonly reason: UnsupportedReason };
@@ -26,9 +32,18 @@ const WATCH_HOSTS = new Set([
 const SHORT_HOSTS = new Set(['youtu.be', 'www.youtu.be']);
 
 const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
+const PLAYLIST_ID = /^[A-Za-z0-9_-]{1,128}$/;
 
 export function canonicalWatchUrl(videoId: string): string {
   return `https://www.youtube.com/watch?v=${videoId}`;
+}
+
+export function canonicalPlaylistUrl(playlistId: string): string {
+  return `https://www.youtube.com/playlist?list=${encodeURIComponent(playlistId)}`;
+}
+
+export function isYouTubeVideoId(value: string): boolean {
+  return VIDEO_ID.test(value);
 }
 
 function video(videoId: string): ClassifiedInput {
@@ -78,8 +93,16 @@ export function classifyInput(raw: string): ClassifiedInput {
     return VIDEO_ID.test(videoId) ? video(videoId) : unsupported('malformed');
   }
 
-  if (path === '/playlist' || url.searchParams.has('list')) {
-    return unsupported('playlist');
+  if (path === '/playlist') {
+    const playlistId = url.searchParams.get('list');
+    if (playlistId === null || !PLAYLIST_ID.test(playlistId)) {
+      return unsupported('malformed');
+    }
+    return {
+      kind: 'youtube-playlist',
+      playlistId,
+      canonicalUrl: canonicalPlaylistUrl(playlistId),
+    };
   }
 
   if (path === '/results') {

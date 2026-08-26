@@ -89,6 +89,91 @@ describe('GuildPlayer - starting and queueing', () => {
   });
 });
 
+describe('GuildPlayer - atomic batch enqueue', () => {
+  it('starts the first item when idle and keeps the rest FIFO', async () => {
+    const { player, transport } = createPlayer();
+    const [a, b, c] = [localTrack('a'), localTrack('b'), localTrack('c')];
+
+    const result = await player.enqueueMany([a, b, c]);
+
+    expect(result).toMatchObject({ kind: 'started', track: a });
+    expect(player.current).toBe(a);
+    expect(player.snapshot().upcoming).toEqual([b, c]);
+    expect(transport.played.map((source) => source.input)).toEqual(['a.opus']);
+  });
+
+  it('appends every item behind a current and pre-existing queue', async () => {
+    const { player } = createPlayer();
+    const [a, b, c] = [localTrack('a'), localTrack('b'), localTrack('c')];
+    await player.enqueue(localTrack('current'));
+    await player.enqueue(localTrack('existing'));
+
+    const result = await player.enqueueMany([a, b, c]);
+
+    expect(result).toMatchObject({ kind: 'queued', position: 2 });
+    expect(player.snapshot().upcoming.map((track) => track.sourceId)).toEqual([
+      'existing',
+      'a',
+      'b',
+      'c',
+    ]);
+  });
+
+  it('appends while paused without implicitly resuming', async () => {
+    const { player, transport } = createPlayer();
+    await player.enqueue(localTrack('current'));
+    player.pause();
+
+    await player.enqueueMany([localTrack('a'), localTrack('b')]);
+
+    expect(player.snapshot().status).toBe('paused');
+    expect(transport.paused).toBe(true);
+    expect(player.snapshot().upcoming.map((track) => track.sourceId)).toEqual(['a', 'b']);
+  });
+
+  it('serialises two concurrent batches without interleaving them', async () => {
+    const { player } = createPlayer();
+    await Promise.all([
+      player.enqueueMany([localTrack('a'), localTrack('b')]),
+      player.enqueueMany([localTrack('c'), localTrack('d')]),
+    ]);
+
+    expect(player.current?.sourceId).toBe('a');
+    expect(player.snapshot().upcoming.map((track) => track.sourceId)).toEqual(['b', 'c', 'd']);
+  });
+
+  it('a stop ordered after a batch clears every pending item', async () => {
+    const { player } = createPlayer();
+
+    await Promise.all([
+      player.enqueueMany([localTrack('a'), localTrack('b'), localTrack('c')]),
+      player.stop(),
+    ]);
+
+    expect(player.snapshot()).toMatchObject({ status: 'idle', current: undefined, upcoming: [] });
+  });
+
+  it('destroy prevents an in-flight batch from starting after resolution', async () => {
+    const transport = new FakeTransport();
+    const logger = fakeLogger();
+    let release: ((source: { kind: 'file'; input: string }) => void) | undefined;
+    const resolve = () =>
+      new Promise<{ kind: 'file'; input: string }>((resolveSource) => {
+        release = resolveSource;
+      });
+    const player = new GuildPlayer({ guildId: 'guild-1', transport, resolve, logger });
+
+    const adding = player.enqueueMany([localTrack('a'), localTrack('b')]);
+    await Promise.resolve();
+    player.destroy();
+    release?.({ kind: 'file', input: 'a.opus' });
+    await adding;
+
+    expect(transport.played).toEqual([]);
+    expect(player.snapshot()).toMatchObject({ status: 'idle', upcoming: [] });
+  });
+});
+
 describe('GuildPlayer - auto-next', () => {
   it('starts the next queued track when one ends naturally', async () => {
     const { player, transport } = createPlayer();

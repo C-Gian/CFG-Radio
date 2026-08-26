@@ -18,6 +18,15 @@ export type EnqueueResult =
   | { readonly kind: 'queued'; readonly track: Track; readonly position: number }
   | { readonly kind: 'failed'; readonly track: Track; readonly error: unknown };
 
+export type EnqueueManyResult =
+  | { readonly kind: 'started'; readonly tracks: readonly Track[]; readonly track: Track }
+  | {
+      readonly kind: 'queued';
+      readonly tracks: readonly Track[];
+      readonly position: number;
+    }
+  | { readonly kind: 'failed'; readonly tracks: readonly Track[]; readonly error: unknown };
+
 export type PauseResult = 'paused' | 'already-paused' | 'nothing-playing';
 export type ResumeResult = 'resumed' | 'already-playing' | 'nothing-playing';
 
@@ -130,6 +139,47 @@ export class GuildPlayer {
         `Queued ${describeTrack(track)} at position ${position} in guild ${this.guildId}`,
       );
       return { kind: 'queued', track, position };
+    });
+  }
+
+  /**
+   * Atomically appends a FIFO batch. If idle, only its first playable track is
+   * resolved now; every later track remains a logical identity in the queue.
+   */
+  enqueueMany(tracks: readonly Track[]): Promise<EnqueueManyResult> {
+    const batch = [...tracks];
+    return this.serialize(async () => {
+      if (this.destroyed || batch.length === 0) {
+        return {
+          kind: 'failed',
+          tracks: batch,
+          error: new Error(this.destroyed ? 'The player is shutting down' : 'The batch is empty'),
+        };
+      }
+
+      const canStart =
+        this.status === 'idle' && this.currentTrack === undefined && this.queue.isEmpty;
+      const position = this.queue.enqueueMany(batch);
+      if (position === undefined) {
+        return { kind: 'failed', tracks: batch, error: new Error('The batch is empty') };
+      }
+
+      this.logger.info(
+        `Queued batch of ${batch.length} track(s) at position ${position} in guild ${this.guildId}`,
+      );
+
+      if (!canStart) {
+        return { kind: 'queued', tracks: batch, position };
+      }
+
+      await this.advance();
+      return this.currentTrack === undefined
+        ? {
+            kind: 'failed',
+            tracks: batch,
+            error: new Error('None of the first playlist tracks could be started'),
+          }
+        : { kind: 'started', tracks: batch, track: this.currentTrack };
     });
   }
 
@@ -298,7 +348,14 @@ export class GuildPlayer {
   private async startTrack(track: Track): Promise<unknown> {
     try {
       const source = await this.resolve(track);
+      if (this.isDestroyed()) {
+        return new Error('The player was destroyed while resolving the track');
+      }
       await this.transport.play(source);
+      if (this.isDestroyed()) {
+        this.transport.stopPlayback();
+        return new Error('The player was destroyed while starting the track');
+      }
       this.currentTrack = track;
       this.status = 'playing';
       this.logger.info(`Started ${describeTrack(track)} in guild ${this.guildId}`);
@@ -312,5 +369,9 @@ export class GuildPlayer {
       this.transport.stopPlayback();
       return error;
     }
+  }
+
+  private isDestroyed(): boolean {
+    return this.destroyed;
   }
 }

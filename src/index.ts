@@ -9,6 +9,7 @@ import { createTrackResolver } from './audio/track-resolver.js';
 import { PlayerService } from './player/player-service.js';
 import { VoiceSessionManager } from './voice/session-manager.js';
 import { createYouTubeMetadataProvider } from './youtube/metadata.js';
+import { createYouTubePlaylistProvider } from './youtube/playlist.js';
 import { YtDlpRunner } from './youtube/ytdlp.js';
 
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
@@ -37,16 +38,19 @@ async function main(): Promise<void> {
     resolve: createTrackResolver({ ytdlp }),
     logger,
   });
-  const youtube = createYouTubeMetadataProvider(ytdlp);
+  const youtube = {
+    ...createYouTubeMetadataProvider(ytdlp),
+    ...createYouTubePlaylistProvider(ytdlp),
+  };
 
   attachHandlers(client, createCommandRegistry(commands), { config, logger, players, youtube });
-  installProcessHandlers({ client, players, logger });
+  installProcessHandlers({ client, players, ytdlp, logger });
 
   logger.info('Starting CFG Radio...');
   logger.debug(
     `Config loaded (logLevel=${config.logLevel}, defaultVolume=${config.defaultVolume}, ` +
       `idleDisconnectSeconds=${config.idleDisconnectSeconds}, ffmpegPath=${config.ffmpegPath}, ` +
-      `ytdlpPath=${config.ytdlpPath})`,
+      `ytdlpPath=${config.ytdlpPath}, maxPlaylistTracks=${config.maxPlaylistTracks})`,
   );
 
   await client.login(config.discordToken);
@@ -55,10 +59,11 @@ async function main(): Promise<void> {
 interface ShutdownTargets {
   readonly client: { destroy: () => Promise<void> };
   readonly players: { destroyAll: () => void };
+  readonly ytdlp: { destroy: () => void };
   readonly logger: Logger;
 }
 
-function installProcessHandlers({ client, players, logger }: ShutdownTargets): void {
+function installProcessHandlers({ client, players, ytdlp, logger }: ShutdownTargets): void {
   let shuttingDown = false;
 
   const shutdown = (reason: string, exitCode: number): void => {
@@ -73,6 +78,11 @@ function installProcessHandlers({ client, players, logger }: ShutdownTargets): v
       players.destroyAll();
     } catch (error) {
       logger.error('Failed to close the voice sessions cleanly', error);
+    }
+    try {
+      ytdlp.destroy();
+    } catch (error) {
+      logger.error('Failed to stop yt-dlp processes cleanly', error);
     }
 
     client

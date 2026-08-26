@@ -87,8 +87,8 @@ async function main(): Promise<void> {
     const classified = classifyInput(target);
     if (classified.kind === 'unsupported') {
       console.log(`  input: unsupported (${classified.reason})`);
-      failures.push(`The given input is not a supported YouTube video (${classified.reason})`);
-    } else {
+      failures.push(`The given input is not a supported YouTube URL (${classified.reason})`);
+    } else if (classified.kind === 'youtube-video') {
       try {
         const { fetchYouTubeMetadata } = await import('./youtube/metadata.js');
         const metadata = await fetchYouTubeMetadata(
@@ -104,6 +104,24 @@ async function main(): Promise<void> {
         const code = isProviderError(error) ? error.code : 'unknown';
         console.log(`  metadata: FAILED (${code})`);
         failures.push(`Live metadata resolution failed (${code})`);
+      }
+    } else {
+      try {
+        const { fetchYouTubePlaylist } = await import('./youtube/playlist.js');
+        const playlist = await fetchYouTubePlaylist(
+          runner,
+          classified.canonicalUrl,
+          classified.playlistId,
+          100,
+        );
+        console.log(`  playlist id: ${playlist.playlist.playlistId}`);
+        console.log(`  title: ${playlist.playlist.title}`);
+        console.log(`  usable items: ${playlist.items.length}`);
+        console.log(`  skipped items: ${playlist.skippedCount}`);
+      } catch (error) {
+        const code = isProviderError(error) ? error.code : 'unknown';
+        console.log(`  playlist metadata: FAILED (${code})`);
+        failures.push(`Live playlist metadata resolution failed (${code})`);
       }
     }
   }

@@ -23,11 +23,27 @@ export type SpawnFfmpeg = (command: string, args: readonly string[]) => FfmpegCh
 export interface FfmpegPipelineOptions {
   readonly ffmpegPath: string;
   readonly inputPath: string;
+  /** Extra input options - headers and reconnection for remote media. */
+  readonly inputOptions?: FfmpegInputOptions;
   readonly logger: Logger;
   /** Injected in tests; defaults to `child_process.spawn`. */
   readonly spawnFn?: SpawnFfmpeg;
   /** Called once when FFmpeg dies before {@link FfmpegPipeline.stop} was called. */
   readonly onUnexpectedExit?: (reason: string) => void;
+}
+
+export interface FfmpegInputOptions {
+  /** HTTP headers to send with the request (remote inputs only). */
+  readonly headers?: Readonly<Record<string, string>> | undefined;
+  /** Enables the HTTP reconnect options; set for remote inputs. */
+  readonly remote?: boolean;
+}
+
+/** FFmpeg expects one `Name: value` per line, CRLF terminated. */
+function headerBlock(headers: Readonly<Record<string, string>>): string {
+  return Object.entries(headers)
+    .map(([name, value]) => `${name}: ${value}\r\n`)
+    .join('');
 }
 
 /**
@@ -37,13 +53,37 @@ export interface FfmpegPipelineOptions {
  * libopus does the encoding and no native Opus binding is needed on the Node
  * side. Output goes to stdout as a stream; stdin is closed so FFmpeg can never
  * block waiting for console input.
+ *
+ * The same pipeline serves local files and remote media URLs: only the input
+ * options differ (headers and reconnection for HTTP).
  */
-export function buildFfmpegArgs(inputPath: string): string[] {
+export function buildFfmpegArgs(inputPath: string, options: FfmpegInputOptions = {}): string[] {
+  const inputOptions: string[] = [];
+
+  if (options.headers !== undefined && Object.keys(options.headers).length > 0) {
+    inputOptions.push('-headers', headerBlock(options.headers));
+  }
+
+  if (options.remote === true) {
+    // A dropped connection mid-track should be retried, not fatal.
+    inputOptions.push(
+      '-reconnect',
+      '1',
+      '-reconnect_streamed',
+      '1',
+      '-reconnect_on_network_error',
+      '1',
+      '-reconnect_delay_max',
+      '5',
+    );
+  }
+
   return [
     '-hide_banner',
     '-loglevel',
     'warning',
     '-nostdin',
+    ...inputOptions,
     '-i',
     inputPath,
     // Audio only: any cover art / video stream is dropped.
@@ -94,7 +134,7 @@ export class FfmpegPipeline {
    */
   static start(options: FfmpegPipelineOptions): FfmpegPipeline {
     const spawnFn = options.spawnFn ?? defaultSpawn;
-    const args = buildFfmpegArgs(options.inputPath);
+    const args = buildFfmpegArgs(options.inputPath, options.inputOptions ?? {});
 
     let child: FfmpegChild;
     try {

@@ -5,6 +5,7 @@ import type { AppConfig } from '../../src/config/env.js';
 import type { CommandContext } from '../../src/discord/context.js';
 import { GuildPlayer } from '../../src/player/guild-player.js';
 import type { PlayerService } from '../../src/player/player-service.js';
+import type { YouTubeMetadata, YouTubeMetadataProvider } from '../../src/youtube/metadata.js';
 import { FakeTransport, fakeLogger, fakeResolver } from './fake-transport.js';
 
 export { fakeLogger };
@@ -17,6 +18,17 @@ export const fakeConfig: AppConfig = {
   defaultVolume: 100,
   idleDisconnectSeconds: 300,
   ffmpegPath: 'ffmpeg',
+  ytdlpPath: 'yt-dlp',
+};
+
+/** Metadata a fake YouTube provider hands back by default. */
+export const fakeMetadata: YouTubeMetadata = {
+  videoId: 'dQw4w9WgXcQ',
+  title: 'A YouTube Song',
+  uploader: 'A Channel',
+  durationMs: 213_000,
+  canonicalUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+  thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hq.jpg',
 };
 
 export interface FakePlayers {
@@ -27,25 +39,36 @@ export interface FakePlayers {
   channelIdOf: ReturnType<typeof vi.fn>;
 }
 
-/** A command context wired to spies - no Discord, no voice, no FFmpeg. */
-export function fakeContext(overrides: Partial<FakePlayers> = {}) {
+export interface FakeContextOverrides extends Partial<FakePlayers> {
+  /** Replaces the default metadata provider (which always succeeds). */
+  fetchMetadata?: ReturnType<typeof vi.fn>;
+}
+
+/** A command context wired to spies - no Discord, no voice, no yt-dlp. */
+export function fakeContext(overrides: FakeContextOverrides = {}) {
+  const { fetchMetadata: fetchMetadataOverride, ...playerOverrides } = overrides;
   const logger = fakeLogger();
+  const fetchMetadata = fetchMetadataOverride ?? vi.fn().mockResolvedValue(fakeMetadata);
+  const youtube: YouTubeMetadataProvider = {
+    fetchMetadata: fetchMetadata as unknown as YouTubeMetadataProvider['fetchMetadata'],
+  };
   const players: FakePlayers = {
     get: vi.fn().mockReturnValue(undefined),
     join: vi.fn(),
     destroy: vi.fn().mockReturnValue(false),
     destroyAll: vi.fn(),
     channelIdOf: vi.fn().mockReturnValue(undefined),
-    ...overrides,
+    ...playerOverrides,
   };
 
   const context: CommandContext = {
     config: fakeConfig,
     logger,
     players: players as unknown as PlayerService,
+    youtube,
   };
 
-  return { context, logger, players };
+  return { context, logger, players, fetchMetadata };
 }
 
 /**
@@ -57,8 +80,9 @@ export function contextWithPlayer(guildId = 'guild-1', channelId: string | null 
   const logger = fakeLogger();
   const player = new GuildPlayer({ guildId, transport, resolve: fakeResolver, logger });
 
-  const { context, players } = fakeContext({
+  const { context, players, fetchMetadata } = fakeContext({
     get: vi.fn((id: string) => (id === guildId ? player : undefined)),
+    join: vi.fn(() => Promise.resolve(player)),
     channelIdOf: vi.fn((id: string) => (id === guildId ? channelId : undefined)),
     destroy: vi.fn((id: string) => {
       if (id !== guildId) {
@@ -69,7 +93,7 @@ export function contextWithPlayer(guildId = 'guild-1', channelId: string | null 
     }),
   });
 
-  return { context, players, player, transport, logger };
+  return { context, players, player, transport, logger, fetchMetadata };
 }
 
 export interface FakeInteractionOptions {
@@ -77,6 +101,8 @@ export interface FakeInteractionOptions {
   userId?: string;
   userChannelId?: string | null;
   stringOptions?: Record<string, string>;
+  /** Permissions the bot is missing in the user's channel. */
+  missingPermissions?: boolean;
 }
 
 /** Minimal chat input interaction: enough for the handlers, nothing more. */
@@ -84,10 +110,21 @@ export function fakeChatInput(options: FakeInteractionOptions = {}) {
   const guildId = options.guildId === undefined ? 'guild-1' : options.guildId;
   const userId = options.userId ?? 'user-1';
   const userChannelId = options.userChannelId === undefined ? 'vc-1' : options.userChannelId;
+  const allowed = options.missingPermissions !== true;
 
   const reply = vi.fn().mockResolvedValue(undefined);
   const editReply = vi.fn().mockResolvedValue(undefined);
-  const member = { voice: { channelId: userChannelId, channel: null } };
+
+  const channel =
+    userChannelId === null
+      ? null
+      : {
+          id: userChannelId,
+          toString: () => `<#${userChannelId}>`,
+          permissionsFor: () => ({ has: () => allowed }),
+        };
+  const member = { voice: { channelId: userChannelId, channel } };
+  const me = { id: 'bot-1' };
 
   const interaction = {
     user: { id: userId },
@@ -104,7 +141,12 @@ export function fakeChatInput(options: FakeInteractionOptions = {}) {
         ? null
         : {
             id: guildId,
-            members: { fetch: vi.fn().mockResolvedValue(member) },
+            voiceAdapterCreator: () => ({}),
+            members: {
+              me,
+              fetch: vi.fn().mockResolvedValue(member),
+              fetchMe: vi.fn().mockResolvedValue(me),
+            },
           },
   };
 

@@ -9,6 +9,8 @@ export interface AppConfig {
   readonly idleDisconnectSeconds: number;
   /** Executable used to spawn FFmpeg; resolved through PATH by default. */
   readonly ffmpegPath: string;
+  /** Executable used to spawn yt-dlp; resolved through PATH by default. */
+  readonly ytdlpPath: string;
 }
 
 export const DEFAULTS = {
@@ -16,9 +18,10 @@ export const DEFAULTS = {
   defaultVolume: 100,
   idleDisconnectSeconds: 300,
   ffmpegPath: 'ffmpeg',
+  ytdlpPath: 'yt-dlp',
 } as const satisfies Pick<
   AppConfig,
-  'logLevel' | 'defaultVolume' | 'idleDisconnectSeconds' | 'ffmpegPath'
+  'logLevel' | 'defaultVolume' | 'idleDisconnectSeconds' | 'ffmpegPath' | 'ytdlpPath'
 >;
 
 /**
@@ -96,6 +99,11 @@ export function ffmpegPathFromEnv(env: RawEnv = process.env): string {
   return optionalString(env, 'FFMPEG_PATH', DEFAULTS.ffmpegPath);
 }
 
+/** yt-dlp executable from the environment. See {@link ffmpegPathFromEnv}. */
+export function ytdlpPathFromEnv(env: RawEnv = process.env): string {
+  return optionalString(env, 'YTDLP_PATH', DEFAULTS.ytdlpPath);
+}
+
 /**
  * Validates the process environment and returns the typed application config.
  *
@@ -119,6 +127,7 @@ export function loadConfig(env: RawEnv = process.env): AppConfig {
       issues,
     ),
     ffmpegPath: optionalString(env, 'FFMPEG_PATH', DEFAULTS.ffmpegPath),
+    ytdlpPath: optionalString(env, 'YTDLP_PATH', DEFAULTS.ytdlpPath),
   };
 
   if (issues.length > 0) {

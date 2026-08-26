@@ -1,0 +1,187 @@
+import { describe, expect, it, vi } from 'vitest';
+
+import { play } from '../src/discord/commands/play.js';
+import { ProviderError } from '../src/player/provider-error.js';
+import { contextWithPlayer, fakeChatInput, fakeContext, replyContent } from './helpers/context.js';
+import { localTrack } from './helpers/fake-transport.js';
+
+const VIDEO_URL = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+
+function playInteraction(url: string, overrides: Record<string, unknown> = {}) {
+  return fakeChatInput({ stringOptions: { url }, ...overrides });
+}
+
+describe('/play - input handling', () => {
+  it.each([
+    ['https://www.youtube.com/playlist?list=PLabcdefghijklmnop', 'Playlist support'],
+    ['https://www.youtube.com/results?search_query=lofi', 'Search is not available'],
+    ['https://soundcloud.com/artist/track', 'Only YouTube video URLs'],
+    ['https://youtube.com.evil.example/watch?v=dQw4w9WgXcQ', 'Only YouTube video URLs'],
+    ['not a url at all', 'Search is not available'],
+  ])('refuses %s before touching the network', async (url, expected) => {
+    const { context, players, fetchMetadata } = fakeContext();
+    const { interaction, reply } = playInteraction(url);
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain(expected);
+    expect(fetchMetadata).not.toHaveBeenCalled();
+    expect(players.join).not.toHaveBeenCalled();
+  });
+
+  it('resolves the metadata of a supported video with the canonical URL', async () => {
+    const { context, fetchMetadata } = contextWithPlayer('guild-1', null);
+    const { interaction } = playInteraction('https://youtu.be/dQw4w9WgXcQ?t=30');
+
+    await play.execute(interaction, context);
+
+    expect(fetchMetadata).toHaveBeenCalledWith(VIDEO_URL, 'dQw4w9WgXcQ');
+  });
+});
+
+describe('/play - voice policy', () => {
+  it('refuses when the user is not in a voice channel', async () => {
+    const { context, fetchMetadata, players } = fakeContext();
+    const { interaction, reply } = playInteraction(VIDEO_URL, { userChannelId: null });
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Join a voice channel first');
+    expect(fetchMetadata).not.toHaveBeenCalled();
+    expect(players.join).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the bot is busy in another channel', async () => {
+    const { context, fetchMetadata } = contextWithPlayer('guild-1', 'vc-9');
+    const { interaction, reply } = playInteraction(VIDEO_URL, { userChannelId: 'vc-1' });
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('already connected to another voice channel');
+    expect(fetchMetadata).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the bot cannot speak in the channel', async () => {
+    const { context, fetchMetadata } = fakeContext();
+    const { interaction, reply } = playInteraction(VIDEO_URL, { missingPermissions: true });
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('missing the following permission');
+    expect(fetchMetadata).not.toHaveBeenCalled();
+  });
+
+  it('is guild only', async () => {
+    const { context } = fakeContext();
+    const { interaction, reply } = playInteraction(VIDEO_URL, { guildId: null });
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('inside a server');
+  });
+});
+
+describe('/play - metadata failures', () => {
+  it.each([
+    ['unavailable', 'This YouTube video is unavailable.'],
+    ['login_required', 'This video requires login and cannot be played.'],
+    ['geo_restricted', 'This video is not available in this region.'],
+    ['timeout', 'YouTube took too long to respond.'],
+    ['rate_limited', 'YouTube is rate limiting me'],
+    ['not_found', 'I could not find that video.'],
+  ] as const)('answers a %s failure with a short message', async (code, expected) => {
+    const { context, players, logger } = fakeContext({
+      fetchMetadata: vi.fn().mockRejectedValue(new ProviderError(code, 'internal detail')),
+    });
+    const { interaction, reply } = playInteraction(VIDEO_URL);
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain(expected);
+    expect(players.join).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalled();
+  });
+
+  it('never shows yt-dlp stderr to the user', async () => {
+    const stderr = 'ERROR: [youtube] dQw4w9WgXcQ: Unable to extract player response; nsig failure';
+    const { context } = fakeContext({
+      fetchMetadata: vi
+        .fn()
+        .mockRejectedValue(new ProviderError('extractor_failed', 'boom', { diagnostic: stderr })),
+    });
+    const { interaction, reply } = playInteraction(VIDEO_URL);
+
+    await play.execute(interaction, context);
+
+    const answer = replyContent(reply);
+    expect(answer).not.toContain('nsig');
+    expect(answer).not.toContain('ERROR:');
+    expect(answer).toContain('I could not read that video');
+  });
+
+  it('handles an unclassified failure without crashing', async () => {
+    const { context } = fakeContext({
+      fetchMetadata: vi.fn().mockRejectedValue(new Error('kaboom')),
+    });
+    const { interaction, reply } = playInteraction(VIDEO_URL);
+
+    await expect(play.execute(interaction, context)).resolves.toBeUndefined();
+    expect(replyContent(reply)).toContain('Something went wrong');
+  });
+});
+
+describe('/play - queueing', () => {
+  it('starts the track when the player is idle', async () => {
+    const { context, player } = contextWithPlayer('guild-1', null);
+    const { interaction, reply } = playInteraction(VIDEO_URL);
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Playing **A YouTube Song**');
+    expect(player.current).toMatchObject({ source: 'youtube', sourceId: 'dQw4w9WgXcQ' });
+  });
+
+  it('queues the track when something is already playing', async () => {
+    const { context, player } = contextWithPlayer('guild-1', 'vc-1');
+    await player.enqueue(localTrack('arpeggio'));
+    const { interaction, reply } = playInteraction(VIDEO_URL);
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toBe('Added to queue at position 1: **A YouTube Song**.');
+    expect(player.current?.sourceId).toBe('arpeggio');
+    expect(player.snapshot().upcoming[0]).toMatchObject({ source: 'youtube' });
+  });
+
+  it('reports a playback failure that happens on immediate start', async () => {
+    const { context, transport } = contextWithPlayer('guild-1', null);
+    transport.failFor('dQw4w9WgXcQ.opus');
+    const { interaction, reply } = playInteraction(VIDEO_URL);
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('I could not start **A YouTube Song**');
+  });
+
+  it('answers when joining the voice channel fails', async () => {
+    const { context, logger } = fakeContext({
+      join: vi.fn().mockRejectedValue(new Error('gateway timeout')),
+    });
+    const { interaction, reply } = playInteraction(VIDEO_URL);
+
+    await play.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('could not join your voice channel');
+    expect(logger.error).toHaveBeenCalled();
+  });
+
+  it('keeps the track free of any media URL', async () => {
+    const { context, player } = contextWithPlayer('guild-1', null);
+    const { interaction } = playInteraction(VIDEO_URL);
+
+    await play.execute(interaction, context);
+
+    expect(JSON.stringify(player.current)).not.toContain('googlevideo');
+    expect(player.current?.canonicalUrl).toBe(VIDEO_URL);
+  });
+});

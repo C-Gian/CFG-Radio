@@ -22,6 +22,7 @@ describe('loadConfig', () => {
       defaultVolume: DEFAULTS.defaultVolume,
       idleDisconnectSeconds: DEFAULTS.idleDisconnectSeconds,
       ffmpegPath: DEFAULTS.ffmpegPath,
+      ytdlpPath: DEFAULTS.ytdlpPath,
     });
   });
 

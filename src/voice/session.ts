@@ -147,6 +147,7 @@ export class VoiceSession implements VoiceSessionHandle {
     const pipeline = FfmpegPipeline.start({
       ffmpegPath: this.ffmpegPath,
       inputPath: source.input,
+      inputOptions: { headers: source.headers, remote: source.kind === 'url' },
       logger: this.logger,
       onUnexpectedExit: (reason) => {
         this.logger.error(`Playback pipeline stopped unexpectedly: ${reason}`);

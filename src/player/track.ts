@@ -3,10 +3,10 @@ import { randomUUID } from 'node:crypto';
 /**
  * Where a track comes from.
  *
- * Only local synthetic assets exist today; `youtube` / `soundcloud` will be
- * added by the provider milestones without touching the queue or the player.
+ * `soundcloud` will be added by a later milestone without touching the queue
+ * or the player.
  */
-export type TrackSource = 'local';
+export type TrackSource = 'local' | 'youtube';
 
 /**
  * The logical identity of something to play.
@@ -29,6 +29,11 @@ export interface Track {
   readonly originalInput: string;
   readonly requestedByUserId: string;
   readonly requestedAt: Date;
+  /** Uploader / channel / artist, when the source exposes one. */
+  readonly artist: string | undefined;
+  /** Stable page the track came from - never a signed media URL. */
+  readonly canonicalUrl: string | undefined;
+  readonly thumbnailUrl: string | undefined;
 }
 
 export interface CreateTrackInput {
@@ -38,6 +43,9 @@ export interface CreateTrackInput {
   readonly originalInput: string;
   readonly requestedByUserId: string;
   readonly durationMs?: number | undefined;
+  readonly artist?: string | undefined;
+  readonly canonicalUrl?: string | undefined;
+  readonly thumbnailUrl?: string | undefined;
 }
 
 /** Builds a track with a fresh id and request timestamp. */
@@ -51,6 +59,9 @@ export function createTrack(input: CreateTrackInput): Track {
     originalInput: input.originalInput,
     requestedByUserId: input.requestedByUserId,
     requestedAt: new Date(),
+    artist: input.artist,
+    canonicalUrl: input.canonicalUrl,
+    thumbnailUrl: input.thumbnailUrl,
   };
 }
 

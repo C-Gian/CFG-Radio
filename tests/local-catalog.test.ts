@@ -75,10 +75,12 @@ describe('Track', () => {
     expect(first.sourceId).toBe('arpeggio');
   });
 
-  it('carries no playback details', () => {
+  it('carries no playback details - no path, no URL, no process', () => {
     const track = localTrack('arpeggio');
 
     expect(Object.keys(track).sort()).toEqual([
+      'artist',
+      'canonicalUrl',
       'durationMs',
       'id',
       'originalInput',
@@ -86,6 +88,7 @@ describe('Track', () => {
       'requestedByUserId',
       'source',
       'sourceId',
+      'thumbnailUrl',
       'title',
     ]);
   });

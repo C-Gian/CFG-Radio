@@ -10,6 +10,7 @@ import { commands } from '../src/discord/commands/index.js';
 import { disconnect } from '../src/discord/commands/disconnect.js';
 import { nowPlaying } from '../src/discord/commands/nowplaying.js';
 import { pause } from '../src/discord/commands/pause.js';
+import { play } from '../src/discord/commands/play.js';
 import { ping } from '../src/discord/commands/ping.js';
 import { playLocal } from '../src/discord/commands/play-local.js';
 import { queue } from '../src/discord/commands/queue.js';
@@ -25,6 +26,7 @@ const EXPECTED_COMMANDS = [
   'nowplaying',
   'pause',
   'ping',
+  'play',
   'playlocal',
   'queue',
   'resume',
@@ -45,6 +47,7 @@ describe('command registry', () => {
 
     expect([...registry.keys()].sort()).toEqual(EXPECTED_COMMANDS);
     expect(registry.get('ping')).toBe(ping);
+    expect(registry.get('play')).toBe(play);
     expect(registry.get('playlocal')).toBe(playLocal);
     expect(registry.get('pause')).toBe(pause);
     expect(registry.get('resume')).toBe(resume);
@@ -69,6 +72,14 @@ describe('command registry', () => {
     expect(payload.every((command) => command.description.length > 0)).toBe(true);
   });
 
+  it('requires a url option on /play', () => {
+    const json = play.data.toJSON();
+    const option = json.options?.[0] as { name?: string; required?: boolean } | undefined;
+
+    expect(option?.name).toBe('url');
+    expect(option?.required).toBe(true);
+  });
+
   it('offers one /playlocal choice per bundled asset', () => {
     const json = playLocal.data.toJSON();
     const option = json.options?.[0] as { choices?: { value: string }[] } | undefined;
@@ -88,6 +99,40 @@ describe('/ping', () => {
 
     expect(reply).toHaveBeenCalledTimes(1);
     expect(replyContent(reply)).toBe('Pong!');
+  });
+});
+
+describe('/playlocal', () => {
+  it('starts the default tone when the player is idle', async () => {
+    const { context, player } = contextWithPlayer('guild-1', null);
+    const { interaction, reply } = fakeChatInput();
+
+    await playLocal.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('Playing **Test tone: arpeggio**');
+    expect(player.current).toMatchObject({ source: 'local', sourceId: 'arpeggio' });
+  });
+
+  it('queues the chosen tone behind the current track', async () => {
+    const { context, player } = contextWithPlayer();
+    await player.enqueue(localTrack('arpeggio'));
+    const { interaction, reply } = fakeChatInput({ stringOptions: { track: 'descending' } });
+
+    await playLocal.execute(interaction, context);
+
+    expect(replyContent(reply)).toBe(
+      'Added to queue at position 1: **Test tone: descending scale**.',
+    );
+    expect(player.snapshot().upcoming[0]).toMatchObject({ sourceId: 'descending' });
+  });
+
+  it('refuses an unknown tone', async () => {
+    const { context } = contextWithPlayer();
+    const { interaction, reply } = fakeChatInput({ stringOptions: { track: 'nope' } });
+
+    await playLocal.execute(interaction, context);
+
+    expect(replyContent(reply)).toContain('does not exist');
   });
 });
 

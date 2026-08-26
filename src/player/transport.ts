@@ -7,9 +7,16 @@ import type { Track } from './track.js';
  * player never builds one of these itself - that is the resolver's job.
  */
 export interface PlayableSource {
-  readonly kind: 'file';
-  /** Passed to FFmpeg as its input. */
+  readonly kind: 'file' | 'url';
+  /** Passed to FFmpeg as its input: a local path, or a direct media URL. */
   readonly input: string;
+  /**
+   * HTTP headers FFmpeg must send with the request (yt-dlp hands over a
+   * User-Agent and friends that keep YouTube from answering 403).
+   *
+   * Runtime only: a `PlayableSource` is never stored on a track or queued.
+   */
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /** Turns the logical identity of a track into something playable. */

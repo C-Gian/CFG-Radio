@@ -69,13 +69,16 @@ anti-bot evasion technique — in code, dependencies or documentation.
 src/
   audio/
     ffmpeg.ts                FFmpeg child process abstraction (Ogg/Opus on stdout) + probe
-    local-catalog.ts         synthetic asset catalog + Track -> PlayableSource resolution
+    local-catalog.ts         synthetic asset catalog + local Track -> PlayableSource
+    track-resolver.ts        dispatches a Track to the resolver of its source
   config/env.ts              env validation -> typed AppConfig (throws ConfigError, never logs values)
   discord/
     client.ts                Discord client factory + event wiring
     command.ts               Command contract, registry, REST serialisation
     context.ts               CommandContext handed to every command handler
+    error-messages.ts        provider failure codes -> short user answers
     guild-access.ts          shared guild + voice-channel checks for the handlers
+    play-flow.ts             shared /play + /playlocal preflight and answers
     interaction-handler.ts   interaction routing + error handling
     track-format.ts          pure /queue and /nowplaying message rendering
     commands/                one file per slash command
@@ -83,8 +86,14 @@ src/
     track.ts                 Track: provider-agnostic logical identity of a song
     queue.ts                 pure FIFO TrackQueue
     guild-player.ts          orchestration: queue, current track, auto-next, controls
+    provider-error.ts        stable, provider-agnostic failure codes
     player-service.ts        one GuildPlayer per guild, tied to its voice session
     transport.ts             PlaybackTransport / PlayableSource / TrackResolver contracts
+  youtube/
+    ytdlp.ts                 the ONLY place that spawns yt-dlp (timeout, kill, classification)
+    url.ts                   pure input classification (single videos only)
+    metadata.ts              yt-dlp JSON -> YouTubeMetadata -> Track
+    playback.ts              late resolution: Track -> direct media URL + headers
   voice/
     session.ts               VoiceConnection + AudioPlayer + FFmpeg (implements the transport)
     session-manager.ts       one session per guild, cleanup entrypoint
@@ -93,9 +102,11 @@ src/
   index.ts                   runtime entrypoint (login, graceful shutdown)
   register-commands.ts       one-off guild slash command registration
   diagnostics-voice.ts       npm run diagnostics:voice
+  diagnostics-ytdlp.ts       npm run diagnostics:ytdlp
 tools/                       maintenance scripts (synthetic asset generation)
 assets/                      synthetic smoke-test audio only (see assets/README.md)
 tests/                       Vitest, pure logic only — no network, no real token, no .env
+tests/integration/           real yt-dlp/YouTube; excluded from `npm test` (npm run test:integration)
 ```
 
 Layering, from the command down: **handler → GuildPlayer → TrackResolver → PlaybackTransport
@@ -110,6 +121,21 @@ Layering, from the command down: **handler → GuildPlayer → TrackResolver →
 - Every state changing player operation goes through the internal serialisation chain, and a
   stale track end must never trigger an auto-next: `/stop` and `/skip` clear the current track
   _before_ stopping the transport.
+
+## Provider rules
+
+- **Only `src/youtube/ytdlp.ts` spawns yt-dlp.** Arguments are always an array, never a shell
+  string, and never built by concatenating user input.
+- Always pass `--no-js-runtimes --js-runtimes node`: yt-dlp prefers Deno when it is enabled, and
+  CFG Radio pins the runtime to the Node it already ships.
+- Providers raise a classified `ProviderError`; the player and the handlers never read yt-dlp
+  stderr, and users never see it.
+- **Late resolution is mandatory.** A queued track holds identity only. Signed media URLs are
+  resolved when playback starts, live in the `PlayableSource`, and are never stored, cached or
+  persisted.
+- Never add cookies, an account, a browser profile, a proxy or a PO-token workaround. If YouTube
+  refuses, classify the failure and fail cleanly.
+- Never download media to disk: FFmpeg streams the resolved URL.
 
 ## Audio / voice rules
 

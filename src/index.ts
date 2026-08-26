@@ -5,9 +5,11 @@ import { attachHandlers, createClient } from './discord/client.js';
 import { createCommandRegistry } from './discord/command.js';
 import { commands } from './discord/commands/index.js';
 import { createLogger, formatForLog, registerSecret, type Logger } from './logger.js';
+import { createTrackResolver } from './audio/track-resolver.js';
 import { PlayerService } from './player/player-service.js';
-import { resolveLocalTrack } from './audio/local-catalog.js';
 import { VoiceSessionManager } from './voice/session-manager.js';
+import { createYouTubeMetadataProvider } from './youtube/metadata.js';
+import { YtDlpRunner } from './youtube/ytdlp.js';
 
 const SHUTDOWN_SIGNALS = ['SIGINT', 'SIGTERM'] as const;
 
@@ -29,15 +31,22 @@ async function main(): Promise<void> {
   const logger = createLogger(config.logLevel);
   const client = createClient();
   const voice = new VoiceSessionManager({ ffmpegPath: config.ffmpegPath, logger });
-  const players = new PlayerService({ voice, resolve: resolveLocalTrack, logger });
+  const ytdlp = new YtDlpRunner({ ytdlpPath: config.ytdlpPath, logger });
+  const players = new PlayerService({
+    voice,
+    resolve: createTrackResolver({ ytdlp }),
+    logger,
+  });
+  const youtube = createYouTubeMetadataProvider(ytdlp);
 
-  attachHandlers(client, createCommandRegistry(commands), { config, logger, players });
+  attachHandlers(client, createCommandRegistry(commands), { config, logger, players, youtube });
   installProcessHandlers({ client, players, logger });
 
   logger.info('Starting CFG Radio...');
   logger.debug(
     `Config loaded (logLevel=${config.logLevel}, defaultVolume=${config.defaultVolume}, ` +
-      `idleDisconnectSeconds=${config.idleDisconnectSeconds}, ffmpegPath=${config.ffmpegPath})`,
+      `idleDisconnectSeconds=${config.idleDisconnectSeconds}, ffmpegPath=${config.ffmpegPath}, ` +
+      `ytdlpPath=${config.ytdlpPath})`,
   );
 
   await client.login(config.discordToken);
